@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Beehive — Orchestrate Coding Agents</title>
+  <meta name="description" content="A desktop app for orchestrating coding agents across isolated git workspaces. Manage repos, create branch-specific clones, and run terminals side-by-side.">
+  <meta property="og:title" content="Beehive — Orchestrate Coding Agents">
+  <meta property="og:description" content="A desktop app for orchestrating coding agents across isolated git workspaces.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://storozhenko98.github.io/beehive/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:creator" content="@technoleviathan">
+  <link rel="icon" type="image/png" href="logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #1e1e2e;
+      --bg-deep: #11111b;
+      --bg2: #181825;
+      --surface: #313244;
+      --surface2: #45475a;
+      --text: #cdd6f4;
+      --text2: #a6adc8;
+      --muted: #6c7086;
+      --accent: #89b4fa;
+      --accent2: #74c7ec;
+      --teal: #94e2d5;
+      --mauve: #cba6f7;
+      --peach: #fab387;
+      --green: #a6e3a1;
+      --border: #313244;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-deep);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    a { color: var(--accent); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--accent2); }
+    code { font-family: 'JetBrains Mono', monospace; }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 32px;
+    }
+
+    /* ── Nav ─────────────────────────────────── */
+
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: rgba(17, 17, 27, 0.8);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid rgba(49, 50, 68, 0.5);
+    }
+
+    .nav-inner {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 32px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--text);
+    }
+
+    .nav-brand img {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .nav-links a {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--text); }
+
+    .nav-links .btn-nav {
+      background: var(--accent);
+      color: var(--bg-deep);
+      padding: 6px 16px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .nav-links .btn-nav:hover { background: var(--accent2); color: var(--bg-deep); }
+
+    /* ── Hero ────────────────────────────────── */
+
+    .hero {
+      text-align: center;
+      padding: 140px 0 80px;
+      position: relative;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, rgba(137, 180, 250, 0.08) 0%, rgba(137, 180, 250, 0.02) 40%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-logo-wrap {
+      position: relative;
+      display: inline-block;
+      margin-bottom: 32px;
+    }
+
+    .hero-logo {
+      width: 120px;
+      height: 120px;
+      border-radius: 28px;
+      position: relative;
+      z-index: 1;
+      filter: drop-shadow(0 0 40px rgba(137, 180, 250, 0.3));
+    }
+
+    .hero-glow {
+      position: absolute;
+      inset: -20px;
+      border-radius: 40px;
+      background: radial-gradient(circle, rgba(137, 180, 250, 0.15), transparent 70%);
+      animation: pulse 4s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.5; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+
+    .hero h1 {
+      font-size: 56px;
+      font-weight: 800;
+      letter-spacing: -2px;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, var(--text), var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero .subtitle {
+      font-size: 20px;
+      color: var(--text2);
+      max-width: 520px;
+      margin: 0 auto 40px;
+      line-height: 1.5;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: var(--bg-deep);
+      box-shadow: 0 0 20px rgba(137, 180, 250, 0.2), inset 0 1px 0 rgba(255,255,255,0.1);
+    }
+    .btn-primary:hover {
+      background: var(--accent2);
+      color: var(--bg-deep);
+      box-shadow: 0 0 30px rgba(137, 180, 250, 0.3);
+      transform: translateY(-1px);
+    }
+
+    .btn-ghost {
+      background: rgba(49, 50, 68, 0.5);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover {
+      background: var(--surface);
+      color: var(--text);
+      border-color: var(--surface2);
+      transform: translateY(-1px);
+    }
+
+    .hero-meta {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .hero-meta span {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .hero-meta span + span::before {
+      content: '\00b7';
+      margin: 0 8px;
+      color: var(--surface2);
+    }
+
+    /* ── Terminal mockup ─────────────────────── */
+
+    .terminal-section {
+      padding: 0 0 80px;
+    }
+
+    .terminal-mockup {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4), 0 0 1px rgba(137, 180, 250, 0.1);
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    .terminal-titlebar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+    .terminal-dot.red { background: #f38ba8; }
+    .terminal-dot.yellow { background: #f9e2af; }
+    .terminal-dot.green { background: #a6e3a1; }
+
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .terminal-body {
+      padding: 20px 24px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.9;
+      color: var(--text2);
+      min-height: 180px;
+    }
+
+    .terminal-body .prompt { color: var(--green); }
+    .terminal-body .cmd { color: var(--text); }
+    .terminal-body .flag { color: var(--peach); }
+    .terminal-body .url { color: var(--accent); }
+    .terminal-body .output { color: var(--muted); }
+    .terminal-body .success { color: var(--green); }
+    .terminal-body .cursor {
+      display: inline-block;
+      width: 8px;
+      height: 16px;
+      background: var(--accent);
+      vertical-align: text-bottom;
+      animation: blink 1.2s step-end infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* ── Features ────────────────────────────── */
+
+    .features {
+      padding: 80px 0;
+    }
+
+    .section-label {
+      text-align: center;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      text-align: center;
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      margin-bottom: 48px;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .feature-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px 24px;
+      transition: all 0.25s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--surface2);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    }
+
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      margin-bottom: 16px;
+    }
+
+    .feature-icon.blue { background: rgba(137, 180, 250, 0.1); color: var(--accent); }
+    .feature-icon.teal { background: rgba(148, 226, 213, 0.1); color: var(--teal); }
+    .feature-icon.mauve { background: rgba(203, 166, 247, 0.1); color: var(--mauve); }
+    .feature-icon.peach { background: rgba(250, 179, 135, 0.1); color: var(--peach); }
+    .feature-icon.green { background: rgba(166, 227, 161, 0.1); color: var(--green); }
+    .feature-icon.accent2 { background: rgba(116, 199, 236, 0.1); color: var(--accent2); }
+
+    .feature-card h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .feature-card p {
+      font-size: 13px;
+      color: var(--text2);
+      line-height: 1.6;
+    }
+
+    /* ── How it works ────────────────────────── */
+
+    .how-it-works {
+      padding: 80px 0;
+    }
+
+    .steps {
+      display: flex;
+      gap: 24px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .step {
+      flex: 1;
+      text-align: center;
+      padding: 32px 20px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      position: relative;
+    }
+
+    .step-number {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--bg-deep);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      margin: 0 auto 16px;
+    }
+
+    .step h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .step p {
+      font-size: 13px;
+      color: var(--text2);
+      line-height: 1.5;
+    }
+
+    .step-arrow {
+      position: absolute;
+      right: -16px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--surface2);
+      font-size: 18px;
+      z-index: 1;
+    }
+
+    /* ── CTA ──────────────────────────────────── */
+
+    .cta {
+      padding: 80px 0;
+      text-align: center;
+    }
+
+    .cta-box {
+      background: linear-gradient(135deg, rgba(137, 180, 250, 0.05), rgba(203, 166, 247, 0.05));
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 60px 40px;
+    }
+
+    .cta-box h2 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 12px;
+    }
+
+    .cta-box p {
+      font-size: 16px;
+      color: var(--text2);
+      margin-bottom: 32px;
+    }
+
+    .cta-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    /* ── Footer ──────────────────────────────── */
+
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 0;
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .footer-copy {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 20px;
+    }
+
+    .footer-links a {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .footer-links a:hover { color: var(--text); }
+
+    /* ── Responsive ──────────────────────────── */
+
+    @media (max-width: 768px) {
+      .hero { padding: 120px 0 60px; }
+      .hero h1 { font-size: 36px; }
+      .hero .subtitle { font-size: 16px; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .steps { flex-direction: column; }
+      .step-arrow { display: none; }
+      .footer-inner { flex-direction: column; gap: 16px; text-align: center; }
+      .nav-links a:not(.btn-nav) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="nav-inner">
+      <a href="#" class="nav-brand">
+        <img src="logo.png" alt="Beehive">
+        Beehive
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="https://github.com/storozhenko98/beehive">GitHub</a>
+        <a href="https://github.com/storozhenko98/beehive/releases/latest" class="btn-nav">Download</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container">
+
+    <section class="hero">
+      <div class="hero-logo-wrap">
+        <div class="hero-glow"></div>
+        <img src="logo.png" alt="Beehive logo" class="hero-logo">
+      </div>
+      <h1>Beehive</h1>
+      <p class="subtitle">
+        Manage repos, create isolated workspaces, and run coding agents side-by-side &mdash; all from one window.
+      </p>
+      <div class="hero-actions">
+        <a href="https://github.com/storozhenko98/beehive/releases/latest" class="btn btn-primary">
+          Download for macOS
+        </a>
+        <a href="https://github.com/storozhenko98/beehive" class="btn btn-ghost">
+          View Source
+        </a>
+      </div>
+      <p class="hero-meta">
+        <span>Apple Silicon</span>
+        <span>Signed &amp; Notarized</span>
+        <span>MIT License</span>
+      </p>
+    </section>
+
+    <section class="terminal-section">
+      <div class="terminal-mockup">
+        <div class="terminal-titlebar">
+          <div class="terminal-dot red"></div>
+          <div class="terminal-dot yellow"></div>
+          <div class="terminal-dot green"></div>
+          <span class="terminal-title">Beehive</span>
+          <div style="width: 36px;"></div>
+        </div>
+        <div class="terminal-body">
+          <span class="prompt">~</span> <span class="cmd">git clone</span> <span class="url">https://github.com/your/project.git</span><br>
+          <span class="output">Cloning into 'project'... done.</span><br>
+          <span class="prompt">~</span> <span class="cmd">beehive</span><br>
+          <span class="success">&#10003;</span> <span class="output">Hive added: your/project</span><br>
+          <span class="success">&#10003;</span> <span class="output">Comb created: feature-auth (main)</span><br>
+          <span class="success">&#10003;</span> <span class="output">3 panes open &mdash; terminal, claude, terminal</span><br>
+          <span class="prompt">~</span> <span class="cursor"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="features" id="features">
+      <p class="section-label">Features</p>
+      <h2 class="section-title">Everything you need to work with agents</h2>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon blue">&#x2B21;</div>
+          <h3>Multi-repo management</h3>
+          <p>Add GitHub repos and switch between them instantly. All your projects in one window.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon teal">&#x2442;</div>
+          <h3>Isolated workspaces</h3>
+          <p>Full git clones on any branch, each in its own directory. No interference between experiments.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon mauve">&#x2588;</div>
+          <h3>Persistent terminals</h3>
+          <p>Real PTY sessions that stay alive across workspace and repo switches. No lost state.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon peach">&#x276F;</div>
+          <h3>Agent panes</h3>
+          <p>Launch Claude Code or any CLI agent alongside your terminals in a flexible grid.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon green">&#x2398;</div>
+          <h3>Copy workspaces</h3>
+          <p>Duplicate a workspace including uncommitted work. Experiment without risk.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon accent2">&#x21C4;</div>
+          <h3>Live branch tracking</h3>
+          <p>Sidebar updates when you switch branches in the terminal. Always know where you are.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="how-it-works" id="how-it-works">
+      <p class="section-label">How it works</p>
+      <h2 class="section-title">Three concepts, zero complexity</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h3>Add a Hive</h3>
+          <p>Link a GitHub repo by URL. Beehive stores the reference and metadata.</p>
+          <span class="step-arrow">&#x2192;</span>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h3>Create a Comb</h3>
+          <p>Clone the repo to an isolated directory on any branch you choose.</p>
+          <span class="step-arrow">&#x2192;</span>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h3>Open Panes</h3>
+          <p>Launch terminals and agents side-by-side. Work on multiple tasks at once.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta">
+      <div class="cta-box">
+        <h2>Ready to try Beehive?</h2>
+        <p>Download the app or build from source. It's free and open source.</p>
+        <div class="cta-actions">
+          <a href="https://github.com/storozhenko98/beehive/releases/latest" class="btn btn-primary">
+            Download for macOS
+          </a>
+          <a href="https://github.com/storozhenko98/beehive" class="btn btn-ghost">
+            Star on GitHub
+          </a>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <footer>
+    <div class="container">
+      <div class="footer-inner">
+        <span class="footer-copy">&copy; 2026 <a href="https://storozh.dev">Mykyta Storozhenko</a></span>
+        <div class="footer-links">
+          <a href="https://github.com/storozhenko98/beehive">GitHub</a>
+          <a href="https://github.com/storozhenko98/beehive/releases">Releases</a>
+          <a href="https://github.com/storozhenko98/beehive/issues">Issues</a>
+          <a href="https://x.com/technoleviathan">@technoleviathan</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
