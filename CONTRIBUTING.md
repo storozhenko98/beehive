@@ -24,7 +24,7 @@ The GitHub CLI must be authenticated: `gh auth login`
 ### Getting started
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/beehive.git
+git clone https://github.com/storozhenko98/beehive.git
 cd beehive
 npm install
 npm run tauri dev

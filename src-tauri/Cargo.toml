@@ -2,7 +2,8 @@
 name = "beehive"
 version = "0.1.0"
 description = "Orchestrate coding agents across isolated git workspaces"
-authors = []
+authors = ["Mykyta Storozhenko <storozhenkomykyta@gmail.com>"]
+repository = "https://github.com/storozhenko98/beehive"
 license = "MIT"
 edition = "2021"
 

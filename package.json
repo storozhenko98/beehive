@@ -3,6 +3,19 @@
   "version": "0.1.0",
   "description": "Orchestrate coding agents across isolated git workspaces",
   "license": "MIT",
+  "author": {
+    "name": "Mykyta Storozhenko",
+    "email": "storozhenkomykyta@gmail.com",
+    "url": "https://storozh.dev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/storozhenko98/beehive.git"
+  },
+  "homepage": "https://github.com/storozhenko98/beehive",
+  "bugs": {
+    "url": "https://github.com/storozhenko98/beehive/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

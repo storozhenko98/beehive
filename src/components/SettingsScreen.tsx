@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion, getName, getTauriVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface PreflightResult {
   ok: boolean;
@@ -180,6 +181,27 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
             </button>
           )}
           {cliError && <div className="error-box" style={{ marginTop: 8 }}>{cliError}</div>}
+        </div>
+
+        <div className="settings-section">
+          <h3>Feedback</h3>
+          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 12 }}>
+            Found a bug or have a feature request?
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => openUrl("https://github.com/storozhenko98/beehive/issues/new")}
+            >
+              Open Issue on GitHub
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => openUrl("https://github.com/storozhenko98/beehive")}
+            >
+              View Repository
+            </button>
+          </div>
         </div>
 
         <div className="settings-section">

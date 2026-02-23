@@ -51,7 +51,7 @@ xcode-select --install
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/beehive.git
+git clone https://github.com/storozhenko98/beehive.git
 cd beehive
 npm install
 npm run tauri dev
@@ -159,6 +159,15 @@ Beehive is built on Tauri v2, which supports all three platforms. The app hasn't
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, project structure, and guidelines.
+
+Found a bug or have a feature request? [Open an issue](https://github.com/storozhenko98/beehive/issues/new).
+
+## Author
+
+**Mykyta Storozhenko**
+- Website: [storozh.dev](https://storozh.dev)
+- GitHub: [@storozhenko98](https://github.com/storozhenko98)
+- X: [@technoleviathan](https://x.com/technoleviathan)
 
 ## License
 
