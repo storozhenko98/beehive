@@ -25,6 +25,11 @@ Thumbs.db
 *.sln
 *.sw?
 
+# Apple certificates
+*.cer
+*.p12
+*.p8
+
 # Claude Code
 .claude/
 

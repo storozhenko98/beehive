@@ -2,12 +2,13 @@
 set -euo pipefail
 
 # Beehive build script (macOS)
-# Produces a .app bundle and .dmg installer.
+# Produces a signed .app bundle and .dmg installer.
 #
 # Usage:
-#   ./build.sh          Build production app
-#   ./build.sh --dev    Run in development mode
-#   ./build.sh --check  Type-check only (no build)
+#   ./build.sh            Build production app (signed + notarized)
+#   ./build.sh --dev      Run in development mode
+#   ./build.sh --check    Type-check only (no build)
+#   ./build.sh --release  Build, notarize, and publish to GitHub Releases
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -25,6 +26,12 @@ check_cmd() {
     exit 1
   fi
 }
+
+# ── Config ───────────────────────────────────────────────────────────────────
+
+NOTARIZE_PROFILE="beehive-notarize"
+VERSION=$(grep '"version"' src-tauri/tauri.conf.json | head -1 | sed 's/.*: *"\(.*\)".*/\1/')
+REPO="storozhenko98/beehive"
 
 # ── Preflight checks ────────────────────────────────────────────────────────
 
@@ -45,6 +52,7 @@ NODE_VER=$(node --version)
 RUST_VER=$(rustc --version)
 dim "  Node: $NODE_VER"
 dim "  Rust: $RUST_VER"
+dim "  Version: $VERSION"
 echo ""
 
 # ── Install dependencies ────────────────────────────────────────────────────
@@ -62,7 +70,52 @@ if [ "${1:-}" = "--dev" ]; then
   MODE="dev"
 elif [ "${1:-}" = "--check" ]; then
   MODE="check"
+elif [ "${1:-}" = "--release" ]; then
+  MODE="release"
 fi
+
+# ── Functions ────────────────────────────────────────────────────────────────
+
+do_build() {
+  echo "Building production app..."
+  echo ""
+
+  # Set notarization env vars — Tauri reads these automatically
+  for var in APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD; do
+    if [ -z "${!var:-}" ]; then
+      red "Error: $var not set."
+      echo "Set notarization env vars before running:"
+      echo "  export APPLE_ID='your@email.com'"
+      echo "  export APPLE_TEAM_ID='XXXXXXXXXX'"
+      echo "  export APPLE_PASSWORD='xxxx-xxxx-xxxx-xxxx'"
+      exit 1
+    fi
+  done
+
+  npm run tauri build
+  echo ""
+}
+
+find_artifacts() {
+  APP_PATH=""
+  DMG_PATH=""
+  if [ -d "src-tauri/target/release/bundle/macos" ]; then
+    APP_PATH=$(find src-tauri/target/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+  fi
+  if [ -d "src-tauri/target/release/bundle/dmg" ]; then
+    DMG_PATH=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" 2>/dev/null | head -1)
+  fi
+}
+
+print_artifacts() {
+  find_artifacts
+  echo "Outputs:"
+  [ -n "${APP_PATH:-}" ] && echo "  App: $APP_PATH"
+  [ -n "${DMG_PATH:-}" ] && echo "  DMG: $DMG_PATH"
+  echo ""
+  echo "Install:"
+  [ -n "${APP_PATH:-}" ] && echo "  cp -r \"$APP_PATH\" /Applications/"
+}
 
 # ── Execute ─────────────────────────────────────────────────────────────────
 
@@ -87,28 +140,47 @@ case "$MODE" in
     ;;
 
   build)
-    echo "Building production app..."
+    do_build
+    green "Build complete! (signed + notarized)"
     echo ""
-    npm run tauri build
+    print_artifacts
+    ;;
+
+  release)
+    check_cmd gh "Install GitHub CLI: https://cli.github.com/"
+
+    TAG="v${VERSION}"
+    echo "Building release ${TAG}..."
     echo ""
 
-    # Find output
-    if [ -d "src-tauri/target/release/bundle/macos" ]; then
-      APP_PATH=$(find src-tauri/target/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
-      DMG_PATH=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" 2>/dev/null | head -1)
-      echo ""
-      green "Build complete!"
-      echo ""
-      echo "Outputs:"
-      [ -n "${APP_PATH:-}" ] && echo "  App: $APP_PATH"
-      [ -n "${DMG_PATH:-}" ] && echo "  DMG: $DMG_PATH"
-      echo ""
-      echo "Install:"
-      echo "  cp -r \"$APP_PATH\" /Applications/"
-    elif [ -d "src-tauri/target/release/bundle" ]; then
-      echo ""
-      green "Build complete!"
-      echo "  Output: src-tauri/target/release/bundle/"
+    do_build
+
+    find_artifacts
+
+    if [ -z "${DMG_PATH:-}" ]; then
+      red "Error: No .dmg found after build."
+      exit 1
     fi
+
+    green "Build complete! (signed + notarized)"
+    echo ""
+    print_artifacts
+    echo ""
+
+    # Check if release already exists
+    if gh release view "$TAG" --repo "$REPO" &>/dev/null; then
+      echo "Release $TAG already exists. Uploading artifacts..."
+      gh release upload "$TAG" "$DMG_PATH" --repo "$REPO" --clobber
+    else
+      echo "Creating GitHub release $TAG..."
+      gh release create "$TAG" \
+        "$DMG_PATH" \
+        --repo "$REPO" \
+        --title "Beehive $TAG" \
+        --generate-notes
+    fi
+
+    green "Release $TAG published!"
+    echo "  https://github.com/$REPO/releases/tag/$TAG"
     ;;
 esac
