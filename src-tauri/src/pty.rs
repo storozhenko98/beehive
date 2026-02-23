@@ -68,6 +68,17 @@ pub async fn create_pty(
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
 
+    // Ensure Homebrew paths are visible inside bundled .app (hardened runtime strips PATH)
+    let extra_paths = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"];
+    let system_path = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<&str> = extra_paths.to_vec();
+    for p in system_path.split(':') {
+        if !parts.contains(&p) {
+            parts.push(p);
+        }
+    }
+    command.env("PATH", parts.join(":"));
+
     let child = pair
         .slave
         .spawn_command(command)

@@ -87,8 +87,31 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
+fn full_path() -> String {
+    let extra = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ];
+    let system_path = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<&str> = extra.to_vec();
+    for p in system_path.split(':') {
+        if !parts.contains(&p) {
+            parts.push(p);
+        }
+    }
+    parts.join(":")
+}
+
+fn cmd_with_path(cmd: &str) -> Command {
+    let mut c = Command::new(cmd);
+    c.env("PATH", full_path());
+    c
+}
+
 fn run_cmd(cmd: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(cmd)
+    let output = cmd_with_path(cmd)
         .args(args)
         .output()
         .map_err(|e| format!("Failed to run {}: {}", cmd, e))?;
@@ -471,7 +494,7 @@ pub async fn create_comb(
     let comb_dir = hive_dir.join(&name);
 
     // Clone the repo into the comb directory
-    let clone_output = Command::new("git")
+    let clone_output = cmd_with_path("git")
         .args(["clone", &state.info.repo_url, comb_dir.to_str().unwrap()])
         .output()
         .map_err(|e| format!("Clone failed: {}", e))?;
@@ -484,7 +507,7 @@ pub async fn create_comb(
     }
 
     // Checkout the branch
-    let checkout_output = Command::new("git")
+    let checkout_output = cmd_with_path("git")
         .args(["checkout", &branch])
         .current_dir(&comb_dir)
         .output()
@@ -492,7 +515,7 @@ pub async fn create_comb(
 
     if !checkout_output.status.success() {
         // Try creating the branch if it doesn't exist remotely
-        let checkout_new = Command::new("git")
+        let checkout_new = cmd_with_path("git")
             .args(["checkout", "-b", &branch])
             .current_dir(&comb_dir)
             .output()
@@ -529,7 +552,7 @@ fn get_git_branch(path: &str) -> Option<String> {
     if !p.exists() {
         return None;
     }
-    let output = Command::new("git")
+    let output = cmd_with_path("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(p)
         .output()
