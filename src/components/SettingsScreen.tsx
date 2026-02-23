@@ -24,6 +24,9 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
   const [appVersion, setAppVersion] = useState("");
   const [appName, setAppName] = useState("");
   const [tauriVersion, setTauriVersion] = useState("");
+  const [cliTarget, setCliTarget] = useState<string | null | undefined>(undefined); // undefined=loading, null=not installed, string=target
+  const [cliLoading, setCliLoading] = useState(false);
+  const [cliError, setCliError] = useState("");
 
   useEffect(() => {
     invoke<string>("get_app_config_path").then(setConfigPath);
@@ -31,7 +34,41 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
     getVersion().then(setAppVersion);
     getName().then(setAppName);
     getTauriVersion().then(setTauriVersion);
+    checkCli();
   }, []);
+
+  async function checkCli() {
+    try {
+      const target = await invoke<string | null>("cli_status");
+      setCliTarget(target);
+    } catch {
+      setCliTarget(null);
+    }
+  }
+
+  async function handleInstallCli() {
+    setCliLoading(true);
+    setCliError("");
+    try {
+      await invoke<string>("install_cli");
+      await checkCli();
+    } catch (e) {
+      setCliError(`${e}`);
+    }
+    setCliLoading(false);
+  }
+
+  async function handleUninstallCli() {
+    setCliLoading(true);
+    setCliError("");
+    try {
+      await invoke("uninstall_cli");
+      await checkCli();
+    } catch (e) {
+      setCliError(`${e}`);
+    }
+    setCliLoading(false);
+  }
 
   function handleReset() {
     if (!confirmReset) {
@@ -105,6 +142,44 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
           ) : (
             <p style={{ color: "var(--text-muted)" }}>Checking...</p>
           )}
+        </div>
+
+        <div className="settings-section">
+          <h3>CLI Command</h3>
+          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 12 }}>
+            Install the <code>beehive</code> command to launch the app from any terminal.
+          </p>
+          {cliTarget === undefined ? (
+            <p style={{ color: "var(--text-muted)", fontSize: 12 }}>Checking...</p>
+          ) : cliTarget ? (
+            <>
+              <div className="settings-row">
+                <span className="settings-label">Status</span>
+                <span className="settings-status ok">Installed</span>
+              </div>
+              <div className="settings-row">
+                <span className="settings-label">Symlink</span>
+                <code className="settings-value">/usr/local/bin/beehive</code>
+              </div>
+              <button
+                className="btn btn-secondary"
+                onClick={handleUninstallCli}
+                disabled={cliLoading}
+                style={{ marginTop: 8 }}
+              >
+                {cliLoading ? "Removing..." : "Uninstall CLI"}
+              </button>
+            </>
+          ) : (
+            <button
+              className="btn btn-primary"
+              onClick={handleInstallCli}
+              disabled={cliLoading}
+            >
+              {cliLoading ? "Installing..." : "Install beehive command"}
+            </button>
+          )}
+          {cliError && <div className="error-box" style={{ marginTop: 8 }}>{cliError}</div>}
         </div>
 
         <div className="settings-section">

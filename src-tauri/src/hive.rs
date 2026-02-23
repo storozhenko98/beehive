@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+#[cfg(unix)]
+use std::os::unix;
+
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -700,6 +703,59 @@ pub async fn copy_comb(
     save_hive_state(&beehive_dir, &dir_name, &state)?;
 
     Ok(comb)
+}
+
+#[tauri::command]
+pub async fn install_cli() -> Result<String, String> {
+    let link_path = "/usr/local/bin/beehive";
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Cannot determine app path: {}", e))?;
+    let target = exe.to_string_lossy().to_string();
+
+    // Remove existing symlink/file if present
+    let link = Path::new(link_path);
+    if link.exists() || link.symlink_metadata().is_ok() {
+        fs::remove_file(link)
+            .map_err(|e| format!("Failed to remove existing {}: {}. Try: sudo rm {}", link_path, e, link_path))?;
+    }
+
+    // Ensure /usr/local/bin exists
+    let parent = link.parent().unwrap();
+    if !parent.exists() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create /usr/local/bin: {}", e))?;
+    }
+
+    unix::fs::symlink(&target, link_path)
+        .map_err(|e| format!("Failed to create symlink: {}. Try: sudo ln -sf \"{}\" {}", e, target, link_path))?;
+
+    Ok(link_path.to_string())
+}
+
+#[tauri::command]
+pub async fn uninstall_cli() -> Result<(), String> {
+    let link_path = "/usr/local/bin/beehive";
+    let link = Path::new(link_path);
+    if link.symlink_metadata().is_ok() {
+        fs::remove_file(link)
+            .map_err(|e| format!("Failed to remove {}: {}. Try: sudo rm {}", link_path, e, link_path))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cli_status() -> Result<Option<String>, String> {
+    let link_path = "/usr/local/bin/beehive";
+    let link = Path::new(link_path);
+    match link.symlink_metadata() {
+        Ok(_) => {
+            match fs::read_link(link) {
+                Ok(target) => Ok(Some(target.to_string_lossy().to_string())),
+                Err(_) => Ok(Some("installed (not a symlink)".to_string())),
+            }
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 // --- helpers ---
