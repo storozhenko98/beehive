@@ -11,6 +11,7 @@ interface Props {
   onNewComb: () => void;
   onManageHives: () => void;
   onSettings: () => void;
+  onHelp: () => void;
   onDeleteComb: (combId: string) => void;
 }
 
@@ -24,6 +25,7 @@ export function Sidebar({
   onNewComb,
   onManageHives,
   onSettings,
+  onHelp,
   onDeleteComb,
 }: Props) {
   const [hiveDropdownOpen, setHiveDropdownOpen] = useState(false);
@@ -144,6 +146,9 @@ export function Sidebar({
         </button>
         <button className="sidebar-footer-btn" onClick={onSettings}>
           Settings
+        </button>
+        <button className="sidebar-footer-btn" onClick={onHelp}>
+          Help
         </button>
       </div>
     </div>

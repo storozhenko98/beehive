@@ -5,6 +5,7 @@ import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewCombModal } from "./NewCombModal";
 import { HiveListScreen } from "./HiveListScreen";
 import { SettingsScreen } from "./SettingsScreen";
+import { HelpScreen } from "./HelpScreen";
 import type { HiveInfo, Comb, PaneConfig } from "../types";
 
 interface Props {
@@ -16,7 +17,8 @@ type Overlay =
   | null
   | { type: "newComb" }
   | { type: "manageHives" }
-  | { type: "settings"; from: "sidebar" | "manageHives" };
+  | { type: "settings"; from: "sidebar" | "manageHives" }
+  | { type: "help"; from: "sidebar" | "manageHives" };
 
 // Per-hive runtime state (combs, opened combs, panes, active comb)
 interface HiveRuntime {
@@ -239,6 +241,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         onNewComb={() => setOverlay({ type: "newComb" })}
         onManageHives={() => setOverlay({ type: "manageHives" })}
         onSettings={() => setOverlay({ type: "settings", from: "sidebar" })}
+        onHelp={() => setOverlay({ type: "help", from: "sidebar" })}
         onDeleteComb={handleDeleteComb}
       />
 
@@ -289,6 +292,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
               selectHive(hive);
             }}
             onSettings={() => setOverlay({ type: "settings", from: "manageHives" })}
+            onHelp={() => setOverlay({ type: "help", from: "manageHives" })}
             onBack={activeHive ? () => {
               setOverlay(null);
               loadHives();
@@ -310,6 +314,21 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
               }
             }}
             onReset={onReset}
+            backLabel={overlay.from === "manageHives" ? "Back to Hives" : activeHive ? `Back to ${activeHive.repoName}` : "Back"}
+          />
+        </div>
+      )}
+
+      {overlay?.type === "help" && (
+        <div className="fullscreen-overlay">
+          <HelpScreen
+            onBack={() => {
+              if (overlay.from === "manageHives") {
+                setOverlay({ type: "manageHives" });
+              } else {
+                setOverlay(null);
+              }
+            }}
             backLabel={overlay.from === "manageHives" ? "Back to Hives" : activeHive ? `Back to ${activeHive.repoName}` : "Back"}
           />
         </div>

@@ -6,11 +6,12 @@ interface Props {
   beehiveDir: string;
   onSelectHive: (hive: HiveInfo) => void;
   onSettings: () => void;
+  onHelp: () => void;
   onBack?: () => void;
   backLabel?: string;
 }
 
-export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onBack, backLabel }: Props) {
+export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onHelp, onBack, backLabel }: Props) {
   const [hives, setHives] = useState<HiveInfo[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
@@ -83,6 +84,9 @@ export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onBack, b
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn btn-primary" onClick={() => { setShowAdd(!showAdd); setError(""); }}>
               + Add Hive
+            </button>
+            <button className="btn btn-secondary" onClick={onHelp} title="Help">
+              ?
             </button>
             <button className="btn btn-secondary" onClick={onSettings} title="Settings">
               &#x2699;
