@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 pub struct PtySession {
     master: Arc<std::sync::Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
 pub struct PtyManager {
@@ -67,7 +68,7 @@ pub async fn create_pty(
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
 
-    let _child = pair
+    let child = pair
         .slave
         .spawn_command(command)
         .map_err(|e| format!("Failed to spawn: {}", e))?;
@@ -92,6 +93,7 @@ pub async fn create_pty(
             PtySession {
                 master: master.clone(),
                 writer: writer.clone(),
+                child,
             },
         );
     }
@@ -184,6 +186,8 @@ pub async fn resize_pty(
 #[tauri::command]
 pub async fn close_pty(id: String, state: State<'_, PtyState>) -> Result<(), String> {
     let mut manager = state.lock().await;
-    manager.sessions.remove(&id);
+    if let Some(mut session) = manager.sessions.remove(&id) {
+        session.child.kill().ok();
+    }
     Ok(())
 }

@@ -23,12 +23,24 @@ pub struct HiveInfo {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct PaneConfig {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub pane_type: String,
+    pub cmd: Option<String>,
+    pub args: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Comb {
     pub id: String,
     pub name: String,
     pub branch: String,
     pub path: String,
     pub created_at: String,
+    #[serde(default)]
+    pub panes: Vec<PaneConfig>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -488,6 +500,7 @@ pub async fn create_comb(
         branch,
         path: comb_dir.to_string_lossy().to_string(),
         created_at: chrono_now(),
+        panes: vec![],
     };
 
     state.combs.push(comb.clone());
@@ -521,6 +534,37 @@ pub async fn delete_comb(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn save_comb_panes(
+    beehive_dir: String,
+    dir_name: String,
+    comb_id: String,
+    panes: Vec<PaneConfig>,
+) -> Result<(), String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+    if let Some(comb) = state.combs.iter_mut().find(|c| c.id == comb_id) {
+        comb.panes = panes;
+        save_hive_state(&beehive_dir, &dir_name, &state)?;
+        Ok(())
+    } else {
+        Err(format!("Comb '{}' not found", comb_id))
+    }
+}
+
+#[tauri::command]
+pub async fn get_comb_panes(
+    beehive_dir: String,
+    dir_name: String,
+    comb_id: String,
+) -> Result<Vec<PaneConfig>, String> {
+    let state = load_hive_state(&beehive_dir, &dir_name)?;
+    if let Some(comb) = state.combs.iter().find(|c| c.id == comb_id) {
+        Ok(comb.panes.clone())
+    } else {
+        Err(format!("Comb '{}' not found", comb_id))
+    }
 }
 
 // --- helpers ---

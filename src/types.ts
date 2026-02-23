@@ -13,24 +13,25 @@ export interface HiveInfo {
   defaultBranch?: string;
 }
 
+export interface PaneConfig {
+  id: string;
+  type: "agent" | "terminal";
+  cmd?: string;
+  args?: string[];
+}
+
 export interface Comb {
   id: string;
   name: string; // user-chosen name
   branch: string; // git branch to pull from
   path: string; // absolute path to the workspace clone
   createdAt: string;
+  panes: PaneConfig[];
 }
 
 export interface HiveState {
   info: HiveInfo;
   combs: Comb[];
-}
-
-export interface PaneInfo {
-  id: string;
-  type: "agent" | "terminal";
-  cmd?: string;
-  args?: string[];
 }
 
 export type AppView =

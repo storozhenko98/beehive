@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { HiveInfo } from "../types";
 
@@ -6,15 +6,19 @@ interface Props {
   beehiveDir: string;
   onSelectHive: (hive: HiveInfo) => void;
   onSettings: () => void;
+  onBack?: () => void;
+  backLabel?: string;
 }
 
-export function HiveListScreen({ beehiveDir, onSelectHive, onSettings }: Props) {
+export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onBack, backLabel }: Props) {
   const [hives, setHives] = useState<HiveInfo[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
   const [loading, setLoading] = useState(false);
-  const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState("");
+
+  // Simple confirm delete: track which dirName is pending confirmation
+  const [confirmDeleteDir, setConfirmDeleteDir] = useState<string | null>(null);
 
   useEffect(() => {
     loadHives();
@@ -35,7 +39,6 @@ export function HiveListScreen({ beehiveDir, onSelectHive, onSettings }: Props) 
       setError("Please enter a repository URL");
       return;
     }
-    // Basic client-side format check
     if (!trimmed.includes("/") || trimmed.endsWith("/")) {
       setError("Use format: owner/repo, https://github.com/owner/repo, or git@github.com:owner/repo.git");
       return;
@@ -56,11 +59,8 @@ export function HiveListScreen({ beehiveDir, onSelectHive, onSettings }: Props) 
     setLoading(false);
   }
 
-  async function handleDelete(dirName: string, repoName: string) {
-    if (!confirm(`Delete hive "${repoName}"? This removes all combs and workspaces.`)) {
-      return;
-    }
-    setDeleting(dirName);
+  const executeDelete = useCallback(async (dirName: string) => {
+    setConfirmDeleteDir(null);
     try {
       await invoke("delete_hive", { beehiveDir, dirName });
       await loadHives();
@@ -68,12 +68,16 @@ export function HiveListScreen({ beehiveDir, onSelectHive, onSettings }: Props) 
       console.error("Failed to delete hive:", e);
       setError(`Delete failed: ${e}`);
     }
-    setDeleting(null);
-  }
+  }, [beehiveDir]);
 
   return (
     <div className="screen-center">
       <div className="card" style={{ maxWidth: 600, width: "100%" }}>
+        {onBack && (
+          <button className="btn-text" onClick={onBack} style={{ marginBottom: 8 }}>
+            &larr; {backLabel ?? "Back"}
+          </button>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
           <h1>&#x2B21; Hives</h1>
           <div style={{ display: "flex", gap: 8 }}>
@@ -147,17 +151,33 @@ export function HiveListScreen({ beehiveDir, onSelectHive, onSettings }: Props) 
                   <span className="hive-desc">{hive.description}</span>
                 )}
               </div>
-              <button
-                className="btn-icon danger"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDelete(hive.dirName, hive.repoName);
-                }}
-                disabled={deleting === hive.dirName}
-                title="Delete hive"
-              >
-                {deleting === hive.dirName ? "..." : "X"}
-              </button>
+              {confirmDeleteDir === hive.dirName ? (
+                <div className="delete-confirm-inline" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    className="btn-sm btn-danger"
+                    onClick={() => executeDelete(hive.dirName)}
+                  >
+                    Are you sure?
+                  </button>
+                  <button
+                    className="btn-sm"
+                    onClick={() => setConfirmDeleteDir(null)}
+                  >
+                    No
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="btn-icon danger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setConfirmDeleteDir(hive.dirName);
+                  }}
+                  title="Delete hive"
+                >
+                  X
+                </button>
+              )}
             </div>
           ))}
         </div>

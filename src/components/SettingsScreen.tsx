@@ -13,9 +13,10 @@ interface Props {
   beehiveDir: string;
   onBack: () => void;
   onReset: () => void;
+  backLabel?: string;
 }
 
-export function SettingsScreen({ beehiveDir, onBack, onReset }: Props) {
+export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props) {
   const [configPath, setConfigPath] = useState("");
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -38,7 +39,7 @@ export function SettingsScreen({ beehiveDir, onBack, onReset }: Props) {
       <div className="card" style={{ maxWidth: 560, width: "100%" }}>
         <div style={{ marginBottom: 24 }}>
           <button className="btn-text" onClick={onBack}>
-            &larr; Back to Hives
+            &larr; {backLabel ?? "Back"}
           </button>
           <h1 style={{ marginTop: 8 }}>Settings</h1>
         </div>

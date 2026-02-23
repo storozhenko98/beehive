@@ -1,54 +1,29 @@
-import { useState, useCallback } from "react";
 import { TerminalPane } from "./TerminalPane";
-import type { Comb, HiveInfo } from "../types";
-
-interface PaneState {
-  id: string;
-  type: "agent" | "terminal";
-}
+import type { Comb, PaneConfig } from "../types";
 
 interface Props {
-  beehiveDir: string;
-  hive: HiveInfo;
   comb: Comb;
-  onBack: () => void;
+  panes: PaneConfig[];
+  isVisible: boolean;
+  onAddPane: (type: "agent" | "terminal") => void;
+  onRemovePane: (id: string) => void;
 }
 
-let paneCounter = 0;
-
-export function WorkspaceScreen({ beehiveDir: _, hive, comb, onBack }: Props) {
-  const [panes, setPanes] = useState<PaneState[]>([
-    { id: `pane-${++paneCounter}`, type: "terminal" },
-  ]);
-
-  const addPane = useCallback((type: "agent" | "terminal") => {
-    setPanes((prev) => [...prev, { id: `pane-${++paneCounter}`, type }]);
-  }, []);
-
-  const removePane = useCallback((id: string) => {
-    setPanes((prev) => {
-      const next = prev.filter((p) => p.id !== id);
-      return next;
-    });
-  }, []);
-
+export function WorkspaceGrid({ comb, panes, isVisible, onAddPane, onRemovePane }: Props) {
   const cols = panes.length <= 1 ? 1 : panes.length <= 4 ? 2 : 3;
 
   return (
-    <div className="workspace-layout">
+    <div className="workspace-container" style={{ display: isVisible ? "flex" : "none" }}>
       <div className="workspace-header">
-        <button className="btn-text" onClick={onBack}>
-          &larr; {hive.repoName}
-        </button>
         <div className="workspace-title">
           <strong>{comb.name}</strong>
           <span className="workspace-branch">{comb.branch}</span>
         </div>
         <div className="workspace-actions">
-          <button className="btn btn-sm" onClick={() => addPane("terminal")}>
+          <button className="btn btn-sm" onClick={() => onAddPane("terminal")}>
             + Terminal
           </button>
-          <button className="btn btn-sm" onClick={() => addPane("agent")}>
+          <button className="btn btn-sm" onClick={() => onAddPane("agent")}>
             + Agent
           </button>
         </div>
@@ -70,7 +45,7 @@ export function WorkspaceScreen({ beehiveDir: _, hive, comb, onBack }: Props) {
               </span>
               <button
                 className="close-btn"
-                onClick={() => removePane(pane.id)}
+                onClick={() => onRemovePane(pane.id)}
                 title="Close pane"
               >
                 x
@@ -81,6 +56,8 @@ export function WorkspaceScreen({ beehiveDir: _, hive, comb, onBack }: Props) {
                 id={pane.id}
                 cwd={comb.path}
                 cmd={pane.type === "agent" ? "claude" : undefined}
+                isVisible={isVisible}
+                onExit={() => onRemovePane(pane.id)}
               />
             </div>
           </div>
