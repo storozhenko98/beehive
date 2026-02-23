@@ -470,6 +470,17 @@ select option {
   overflow: hidden;
 }
 
+.custom-select-dropdown-fixed {
+  position: fixed;
+  z-index: 10000;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(137, 180, 250, 0.1);
+  overflow: hidden;
+}
+
+
 .custom-select-search {
   padding: 6px;
   border-bottom: 1px solid var(--border);
@@ -482,7 +493,7 @@ select option {
 }
 
 .custom-select-options {
-  max-height: 200px;
+  max-height: 320px;
   overflow-y: auto;
 }
 
@@ -531,6 +542,14 @@ select option {
   text-align: center;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.custom-select-count {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  text-align: right;
 }
 
 /* ---- Comb list ---- */

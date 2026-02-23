@@ -461,7 +461,8 @@ pub async fn list_branches(beehive_dir: String, dir_name: String) -> Result<Vec<
 
     let output = run_cmd("gh", &[
         "api",
-        &format!("repos/{}/branches", repo_spec),
+        &format!("repos/{}/branches?per_page=100", repo_spec),
+        "--paginate",
         "--jq", ".[].name",
     ]).map_err(|e| format!("Failed to list branches: {}", e))?;
 

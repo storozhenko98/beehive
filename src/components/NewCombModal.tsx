@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Comb, HiveInfo } from "../types";
 
@@ -35,6 +35,8 @@ export function NewCombModal({ beehiveDir, hive, existingNames, onCreated, onClo
   // Custom dropdown state
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dropdownFilter, setDropdownFilter] = useState("");
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const filterInputRef = useRef<HTMLInputElement>(null);
 
@@ -45,13 +47,39 @@ export function NewCombModal({ beehiveDir, hive, existingNames, onCreated, onClo
   // Close dropdown on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (
+        dropdownRef.current && !dropdownRef.current.contains(target) &&
+        triggerRef.current && !triggerRef.current.contains(target)
+      ) {
         setDropdownOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
+
+  const updateDropdownPos = useCallback(() => {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      const viewportPadding = 12;
+      const maxHeight = Math.max(150, window.innerHeight - rect.bottom - 2 - viewportPadding);
+      setDropdownPos({
+        top: rect.bottom + 2,
+        left: rect.left,
+        width: rect.width,
+        maxHeight,
+      });
+    }
+  }, []);
+
+  // Reposition on scroll/resize while open
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    updateDropdownPos();
+    window.addEventListener("resize", updateDropdownPos);
+    return () => window.removeEventListener("resize", updateDropdownPos);
+  }, [dropdownOpen, updateDropdownPos]);
 
   async function loadBranches() {
     setBranchesLoading(true);
@@ -153,8 +181,9 @@ export function NewCombModal({ beehiveDir, hive, existingNames, onCreated, onClo
 
         <div className="form-group">
           <label>Branch</label>
-          <div className="custom-select" ref={dropdownRef}>
+          <div className="custom-select">
             <button
+              ref={triggerRef}
               className="custom-select-trigger"
               onClick={toggleDropdown}
               type="button"
@@ -166,43 +195,6 @@ export function NewCombModal({ beehiveDir, hive, existingNames, onCreated, onClo
               </span>
               <span className="custom-select-arrow">{dropdownOpen ? "\u25B2" : "\u25BC"}</span>
             </button>
-
-            {dropdownOpen && (
-              <div className="custom-select-dropdown">
-                <div className="custom-select-search">
-                  <input
-                    ref={filterInputRef}
-                    type="text"
-                    value={dropdownFilter}
-                    onChange={(e) => setDropdownFilter(e.target.value)}
-                    placeholder="Filter branches..."
-                    autoComplete="off"
-                    spellCheck={false}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") setDropdownOpen(false);
-                      if (e.key === "Enter" && filteredBranches.length === 1) {
-                        selectBranch(filteredBranches[0].name);
-                      }
-                    }}
-                  />
-                </div>
-                <div className="custom-select-options">
-                  {filteredBranches.length === 0 && (
-                    <div className="custom-select-empty">No branches found</div>
-                  )}
-                  {filteredBranches.map((b) => (
-                    <div
-                      key={b.name}
-                      className={`custom-select-option ${b.name === branch ? "selected" : ""}`}
-                      onClick={() => selectBranch(b.name)}
-                    >
-                      <span className="branch-name">{b.name}</span>
-                      {b.isDefault && <span className="branch-default-tag">default</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
@@ -216,6 +208,58 @@ export function NewCombModal({ beehiveDir, hive, existingNames, onCreated, onClo
           </button>
         </div>
       </div>
+
+      {dropdownOpen && dropdownPos && (
+        <div
+          ref={dropdownRef}
+          className="custom-select-dropdown-fixed"
+          style={{
+            top: dropdownPos.top,
+            left: dropdownPos.left,
+            width: dropdownPos.width,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="custom-select-search">
+            <input
+              ref={filterInputRef}
+              type="text"
+              value={dropdownFilter}
+              onChange={(e) => setDropdownFilter(e.target.value)}
+              placeholder="Filter branches..."
+              autoComplete="off"
+              spellCheck={false}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setDropdownOpen(false);
+                if (e.key === "Enter" && filteredBranches.length === 1) {
+                  selectBranch(filteredBranches[0].name);
+                }
+              }}
+            />
+          </div>
+          <div className="custom-select-options" style={{ maxHeight: Math.max(120, dropdownPos.maxHeight - 75) }}>
+            {filteredBranches.length === 0 && (
+              <div className="custom-select-empty">No branches found</div>
+            )}
+            {filteredBranches.map((b) => (
+              <div
+                key={b.name}
+                className={`custom-select-option ${b.name === branch ? "selected" : ""}`}
+                onClick={() => selectBranch(b.name)}
+                title={b.name}
+              >
+                <span className="branch-name">{b.name}</span>
+                {b.isDefault && <span className="branch-default-tag">default</span>}
+              </div>
+            ))}
+          </div>
+          {branches.length > 0 && (
+            <div className="custom-select-count">
+              {filteredBranches.length} of {branches.length} branches
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
