@@ -1,6 +1,12 @@
 # Changelog
 
-## 2026-02-22 — Initial Release
+## 0.1.3 — 2026-02-23
+
+### Bug Fixes
+- Fix file/image drag-and-drop into terminal panes. Tauri v2 intercepts native drag events by default, preventing files from reaching the terminal. Now listens for Tauri's drag-drop events and pastes file paths through xterm.js with proper bracketed paste handling, so coding agents (OpenCode, Claude Code) correctly detect dropped images.
+- Added drag-over visual feedback (dashed blue border overlay) when hovering a file over a terminal pane.
+
+## 0.1.2 — 2026-02-22 — Initial Release
 
 ### Core Infrastructure
 - Tauri v2 scaffold with React + TypeScript + Vite frontend
