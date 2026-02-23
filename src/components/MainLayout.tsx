@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Sidebar } from "./Sidebar";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewCombModal } from "./NewCombModal";
+import { CopyCombModal } from "./CopyCombModal";
 import { CustomButtonsModal } from "./CustomButtonsModal";
 import { HiveListScreen } from "./HiveListScreen";
 import { SettingsScreen } from "./SettingsScreen";
@@ -20,7 +21,8 @@ type Overlay =
   | { type: "manageHives" }
   | { type: "settings"; from: "sidebar" | "manageHives" }
   | { type: "help"; from: "sidebar" | "manageHives" }
-  | { type: "customButtons" };
+  | { type: "customButtons" }
+  | { type: "copyComb"; sourceCombId: string };
 
 // Per-hive runtime state (combs, opened combs, panes, active comb)
 interface HiveRuntime {
@@ -46,6 +48,27 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
   useEffect(() => {
     loadHives();
   }, [beehiveDir]);
+
+  // Periodically refresh comb branches from git
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (!activeHiveDirName) return;
+      try {
+        const list = await invoke<Comb[]>("list_combs", {
+          beehiveDir,
+          dirName: activeHiveDirName,
+        });
+        updateRuntime(activeHiveDirName, (rt) => ({
+          ...rt,
+          combs: rt.combs.map((c) => {
+            const fresh = list.find((f) => f.id === c.id);
+            return fresh ? { ...c, branch: fresh.branch } : c;
+          }),
+        }));
+      } catch { /* ignore */ }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [activeHiveDirName, beehiveDir]);
 
   async function loadHives() {
     try {
@@ -210,6 +233,33 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     openComb(comb);
   }
 
+  const [copyCombLoading, setCopyCombLoading] = useState(false);
+  const [copyCombError, setCopyCombError] = useState("");
+
+  async function handleCopyComb(sourceCombId: string, newName: string) {
+    if (!activeHiveDirName) return;
+    setCopyCombLoading(true);
+    setCopyCombError("");
+    try {
+      const comb = await invoke<Comb>("copy_comb", {
+        beehiveDir,
+        dirName: activeHiveDirName,
+        sourceCombId,
+        newName,
+      });
+      setOverlay(null);
+      setCopyCombLoading(false);
+      updateRuntime(activeHiveDirName, (rt) => ({
+        ...rt,
+        combs: [...rt.combs, comb],
+      }));
+      openComb(comb);
+    } catch (e) {
+      setCopyCombError(`${e}`);
+      setCopyCombLoading(false);
+    }
+  }
+
   async function saveCustomButtons(buttons: CustomButton[]) {
     if (!activeHiveDirName) return;
     try {
@@ -266,6 +316,11 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         onSettings={() => setOverlay({ type: "settings", from: "sidebar" })}
         onHelp={() => setOverlay({ type: "help", from: "sidebar" })}
         onDeleteComb={handleDeleteComb}
+        onCopyComb={(combId) => {
+          setCopyCombError("");
+          setCopyCombLoading(false);
+          setOverlay({ type: "copyComb", sourceCombId: combId });
+        }}
       />
 
       <div className="main-content">
@@ -306,10 +361,26 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         <NewCombModal
           beehiveDir={beehiveDir}
           hive={activeHive}
+          existingNames={currentCombs.map((c) => c.name)}
           onCreated={handleCombCreated}
           onClose={() => setOverlay(null)}
         />
       )}
+
+      {overlay?.type === "copyComb" && activeHive && (() => {
+        const sourceComb = currentCombs.find((c) => c.id === overlay.sourceCombId);
+        if (!sourceComb) return null;
+        return (
+          <CopyCombModal
+            sourceCombName={sourceComb.name}
+            existingNames={currentCombs.map((c) => c.name)}
+            loading={copyCombLoading}
+            error={copyCombError}
+            onCopy={(newName) => handleCopyComb(overlay.sourceCombId, newName)}
+            onClose={() => setOverlay(null)}
+          />
+        );
+      })()}
 
       {overlay?.type === "manageHives" && (
         <div className="fullscreen-overlay">

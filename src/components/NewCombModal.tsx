@@ -10,11 +10,21 @@ interface RepoBranch {
 interface Props {
   beehiveDir: string;
   hive: HiveInfo;
+  existingNames: string[];
   onCreated: (comb: Comb) => void;
   onClose: () => void;
 }
 
-export function NewCombModal({ beehiveDir, hive, onCreated, onClose }: Props) {
+function validateCombName(name: string, existingNames: string[]): string {
+  if (!name) return "";
+  if (name.length > 40) return "Max 40 characters";
+  if (name.startsWith(".") || name.startsWith("-")) return "Cannot start with '.' or '-'";
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) return "Only letters, numbers, hyphens, underscores";
+  if (existingNames.includes(name)) return `'${name}' already exists`;
+  return "";
+}
+
+export function NewCombModal({ beehiveDir, hive, existingNames, onCreated, onClose }: Props) {
   const [name, setName] = useState("");
   const [branch, setBranch] = useState("");
   const [branches, setBranches] = useState<RepoBranch[]>([]);
@@ -82,9 +92,15 @@ export function NewCombModal({ beehiveDir, hive, onCreated, onClose }: Props) {
     b.name.toLowerCase().includes(dropdownFilter.toLowerCase())
   );
 
+  const nameValidation = validateCombName(name.trim(), existingNames);
+
   async function handleCreate() {
     if (!name.trim()) {
       setError("Comb name is required");
+      return;
+    }
+    if (nameValidation) {
+      setError(nameValidation);
       return;
     }
     if (!branch) {
@@ -125,8 +141,14 @@ export function NewCombModal({ beehiveDir, hive, onCreated, onClose }: Props) {
             autoComplete="off"
             spellCheck={false}
             autoFocus
+            maxLength={40}
             onKeyDown={(e) => e.key === "Enter" && !loading && handleCreate()}
           />
+          {nameValidation && (
+            <span style={{ fontSize: 11, color: "var(--danger)", marginTop: 4, display: "block" }}>
+              {nameValidation}
+            </span>
+          )}
         </div>
 
         <div className="form-group">
@@ -186,7 +208,7 @@ export function NewCombModal({ beehiveDir, hive, onCreated, onClose }: Props) {
 
         {error && <div className="error-box">{error}</div>}
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn-primary" onClick={handleCreate} disabled={loading}>
+          <button className="btn btn-primary" onClick={handleCreate} disabled={loading || !!nameValidation}>
             {loading ? "Cloning..." : "Create Comb"}
           </button>
           <button className="btn btn-secondary" onClick={onClose}>

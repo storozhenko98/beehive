@@ -662,12 +662,16 @@ select option {
 }
 
 .sidebar-comb-item:hover {
-  background: var(--bg-surface);
+  background: rgba(69, 71, 90, 0.4);
 }
 
 .sidebar-comb-item.active {
   background: var(--bg-surface);
   border-left-color: var(--accent);
+}
+
+.sidebar-comb-item.active:hover {
+  background: var(--bg-surface);
 }
 
 .sidebar-comb-info {
@@ -693,6 +697,36 @@ select option {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.sidebar-comb-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sidebar-comb-copy {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.sidebar-comb-item:hover .sidebar-comb-copy {
+  opacity: 1;
+}
+
+.sidebar-comb-copy:hover {
+  color: var(--accent);
+  background: rgba(137, 180, 250, 0.1);
 }
 
 .sidebar-comb-delete {

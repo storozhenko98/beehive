@@ -13,6 +13,7 @@ interface Props {
   onSettings: () => void;
   onHelp: () => void;
   onDeleteComb: (combId: string) => void;
+  onCopyComb: (combId: string) => void;
 }
 
 export function Sidebar({
@@ -27,6 +28,7 @@ export function Sidebar({
   onSettings,
   onHelp,
   onDeleteComb,
+  onCopyComb,
 }: Props) {
   const [hiveDropdownOpen, setHiveDropdownOpen] = useState(false);
   const hiveDropdownRef = useRef<HTMLDivElement>(null);
@@ -115,16 +117,28 @@ export function Sidebar({
                   </button>
                 </div>
               ) : (
-                <button
-                  className="sidebar-comb-delete"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setConfirmDeleteId(comb.id);
-                  }}
-                  title="Delete comb"
-                >
-                  x
-                </button>
+                <div className="sidebar-comb-actions">
+                  <button
+                    className="sidebar-comb-copy"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCopyComb(comb.id);
+                    }}
+                    title="Copy comb"
+                  >
+                    &#x2398;
+                  </button>
+                  <button
+                    className="sidebar-comb-delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDeleteId(comb.id);
+                    }}
+                    title="Delete comb"
+                  >
+                    x
+                  </button>
+                </div>
               )}
             </div>
           ))}

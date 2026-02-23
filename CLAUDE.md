@@ -30,7 +30,8 @@ beehive/
 │       ├── Sidebar.tsx           # Hive selector dropdown + comb list + footer nav
 │       ├── MainLayout.tsx        # Orchestrator: sidebar + workspace + overlays, per-hive runtime state
 │       ├── WorkspaceGrid.tsx     # Terminal grid for a comb — add/remove panes
-│       ├── NewCombModal.tsx      # Modal: comb creation form (name + branch dropdown)
+│       ├── NewCombModal.tsx      # Modal: comb creation form (name + branch dropdown, live validation)
+│       ├── CopyCombModal.tsx    # Modal: duplicate an existing comb (full cp -r)
 │       ├── CustomButtonsModal.tsx # Modal: configure per-hive custom buttons (up to 2)
 │       ├── SettingsScreen.tsx    # Paths, dependency status, reset
 │       └── TerminalPane.tsx      # xterm.js wrapper with PTY IPC, visibility toggling, Unicode 11
@@ -102,6 +103,12 @@ cd /Users/nikita/beehive && npm run tauri build
 
 13. **Custom buttons per hive:** Each hive can have up to 2 custom buttons (stored as `CustomButton { label, cmd }` in `HiveInfo.customButtons`). These replace the old hardcoded "+ Agent" button in the workspace header. A gear icon opens `CustomButtonsModal` to configure buttons, with "previously used" suggestions from other hives. The `save_custom_buttons` command persists to state.json. Uses `#[serde(default)]` for backward compatibility with old state files.
 
+14. **Comb name validation:** Both `create_comb` and `copy_comb` validate names via `validate_comb_name`: non-empty, max 40 chars, `[a-zA-Z0-9_-]` only, no `.`/`-` prefix, no `.hive`, no duplicates. Frontend mirrors this with live inline validation in `NewCombModal` and `CopyCombModal`.
+
+15. **Copy comb:** `copy_comb` command does a recursive `cp -r` of the source comb directory (including `.git`, uncommitted work, etc.) to a new directory, creates a fresh `Comb` entry with new UUID/timestamp/empty panes, and persists to state. Sidebar shows a copy icon on hover next to the delete button.
+
+16. **Live branch refresh:** `list_combs` reads the actual git branch (`git rev-parse --abbrev-ref HEAD`) from each comb's directory, updating state.json if it differs from stored value. `MainLayout` polls every 5 seconds to keep the sidebar branch labels current when users switch branches in the terminal.
+
 ## State & Config Files
 
 - `~/.beehive/config.json` — App-level config (beehive directory path)
@@ -128,7 +135,7 @@ App startup → Preflight → Setup (if first run) → MainLayout
                                                     │   └── Settings (overlay, back → Manage Hives)
                                                     ├── Sidebar
                                                     │   ├── Hive dropdown (switch between hives)
-                                                    │   ├── Comb list (click to open, x to delete)
+                                                    │   ├── Comb list (click to open, copy icon to duplicate, x to delete)
                                                     │   ├── + New Comb (modal)
                                                     │   ├── Manage Hives (overlay)
                                                     │   └── Settings (overlay, back → workspace)

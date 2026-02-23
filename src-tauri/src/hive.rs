@@ -461,6 +461,8 @@ pub async fn create_comb(
 ) -> Result<Comb, String> {
     let mut state = load_hive_state(&beehive_dir, &dir_name)?;
 
+    validate_comb_name(&name, &state.combs)?;
+
     let comb_id = uuid::Uuid::new_v4().to_string();
     let hive_dir = Path::new(&beehive_dir).join(&dir_name);
     let comb_dir = hive_dir.join(&name);
@@ -519,9 +521,38 @@ pub async fn create_comb(
     Ok(comb)
 }
 
+fn get_git_branch(path: &str) -> Option<String> {
+    let p = Path::new(path);
+    if !p.exists() {
+        return None;
+    }
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(p)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
 #[tauri::command]
 pub async fn list_combs(beehive_dir: String, dir_name: String) -> Result<Vec<Comb>, String> {
-    let state = load_hive_state(&beehive_dir, &dir_name)?;
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+    let mut changed = false;
+    for comb in &mut state.combs {
+        if let Some(branch) = get_git_branch(&comb.path) {
+            if branch != comb.branch {
+                comb.branch = branch;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        save_hive_state(&beehive_dir, &dir_name, &state)?;
+    }
     Ok(state.combs)
 }
 
@@ -587,6 +618,88 @@ pub async fn save_custom_buttons(
     state.info.custom_buttons = buttons;
     save_hive_state(&beehive_dir, &dir_name, &state)?;
     Ok(())
+}
+
+fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Comb name cannot be empty".to_string());
+    }
+    if name.len() > 40 {
+        return Err("Comb name must be 40 characters or fewer".to_string());
+    }
+    if name.starts_with('.') || name.starts_with('-') {
+        return Err("Comb name cannot start with '.' or '-'".to_string());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err("Comb name can only contain letters, numbers, hyphens, and underscores".to_string());
+    }
+    if name == ".hive" {
+        return Err("'.hive' is a reserved name".to_string());
+    }
+    if existing_combs.iter().any(|c| c.name == name) {
+        return Err(format!("A comb named '{}' already exists", name));
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst)
+        .map_err(|e| format!("Failed to create directory {:?}: {}", dst, e))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read {:?}: {}", src, e))? {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)
+                .map_err(|e| format!("Failed to copy {:?}: {}", src_path, e))?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_comb(
+    beehive_dir: String,
+    dir_name: String,
+    source_comb_id: String,
+    new_name: String,
+) -> Result<Comb, String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    let source = state
+        .combs
+        .iter()
+        .find(|c| c.id == source_comb_id)
+        .ok_or_else(|| format!("Source comb '{}' not found", source_comb_id))?
+        .clone();
+
+    validate_comb_name(&new_name, &state.combs)?;
+
+    let hive_dir = Path::new(&beehive_dir).join(&dir_name);
+    let source_dir = Path::new(&source.path);
+    let new_dir = hive_dir.join(&new_name);
+
+    if !source_dir.exists() {
+        return Err(format!("Source comb directory does not exist: {}", source.path));
+    }
+
+    copy_dir_recursive(source_dir, &new_dir)?;
+
+    let comb = Comb {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: new_name.clone(),
+        branch: source.branch.clone(),
+        path: new_dir.to_string_lossy().to_string(),
+        created_at: chrono_now(),
+        panes: vec![],
+    };
+
+    state.combs.push(comb.clone());
+    save_hive_state(&beehive_dir, &dir_name, &state)?;
+
+    Ok(comb)
 }
 
 // --- helpers ---

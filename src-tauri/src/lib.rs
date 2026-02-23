@@ -37,6 +37,7 @@ pub fn run() {
             hive::create_comb,
             hive::list_combs,
             hive::delete_comb,
+            hive::copy_comb,
             hive::save_comb_panes,
             hive::get_comb_panes,
             hive::save_custom_buttons,
