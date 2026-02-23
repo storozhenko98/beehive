@@ -12,6 +12,13 @@ pub struct BeehiveConfig {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct CustomButton {
+    pub label: String,
+    pub cmd: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct HiveInfo {
     pub dir_name: String,
     pub repo_url: String,
@@ -19,6 +26,8 @@ pub struct HiveInfo {
     pub owner: String,
     pub description: Option<String>,
     pub default_branch: Option<String>,
+    #[serde(default)]
+    pub custom_buttons: Vec<CustomButton>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -319,6 +328,7 @@ pub async fn verify_repo(repo_url: String) -> Result<HiveInfo, String> {
         owner,
         description,
         default_branch,
+        custom_buttons: vec![],
     })
 }
 
@@ -565,6 +575,18 @@ pub async fn get_comb_panes(
     } else {
         Err(format!("Comb '{}' not found", comb_id))
     }
+}
+
+#[tauri::command]
+pub async fn save_custom_buttons(
+    beehive_dir: String,
+    dir_name: String,
+    buttons: Vec<CustomButton>,
+) -> Result<(), String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+    state.info.custom_buttons = buttons;
+    save_hive_state(&beehive_dir, &dir_name, &state)?;
+    Ok(())
 }
 
 // --- helpers ---

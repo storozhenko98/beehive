@@ -39,6 +39,7 @@ pub fn run() {
             hive::delete_comb,
             hive::save_comb_panes,
             hive::get_comb_panes,
+            hive::save_custom_buttons,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -17,6 +17,9 @@ Tauri v2 + React + TypeScript frontend, Rust backend with portable-pty + xterm.j
 - [x] Fix: delete hive persistence
 - [x] Fix: autocomplete/spellcheck disabled on repo input
 - [x] Fix: auto-cleanup broken hive dirs on list
+- [x] Custom buttons per hive (replaces hardcoded "+ Agent")
+- [x] CustomButtonsModal with previously-used suggestions from other hives
+- [x] Fix: newly created hives not appearing in sidebar dropdown
 
 ## TODO — Short Term
 - [ ] Setup screen: add onboarding guide / more info for first-time users
@@ -29,11 +32,11 @@ Tauri v2 + React + TypeScript frontend, Rust backend with portable-pty + xterm.j
 
 ## TODO — Medium Term
 - [ ] Environment management (.env files, mapping to combs)
-- [ ] Agent configuration per hive (which agent command to use)
+- [x] Agent configuration per hive (which agent command to use) — done via custom buttons
 - [ ] Comb: pull/push/sync with remote
 - [ ] Comb: show git status in sidebar
-- [ ] Multiple agent support (claude, opencode, etc.)
-- [ ] Persist workspace pane layout per comb
+- [x] Multiple agent support (claude, opencode, etc.) — done via custom buttons
+- [x] Persist workspace pane layout per comb
 
 ## TODO — Long Term
 - [ ] Setup screen onboarding wizard with illustrations

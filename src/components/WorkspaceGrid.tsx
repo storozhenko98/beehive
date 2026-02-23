@@ -1,15 +1,17 @@
 import { TerminalPane } from "./TerminalPane";
-import type { Comb, PaneConfig } from "../types";
+import type { Comb, PaneConfig, CustomButton } from "../types";
 
 interface Props {
   comb: Comb;
   panes: PaneConfig[];
+  customButtons: CustomButton[];
   isVisible: boolean;
-  onAddPane: (type: "agent" | "terminal") => void;
+  onAddPane: (cmd?: string) => void;
   onRemovePane: (id: string) => void;
+  onConfigureButtons: () => void;
 }
 
-export function WorkspaceGrid({ comb, panes, isVisible, onAddPane, onRemovePane }: Props) {
+export function WorkspaceGrid({ comb, panes, customButtons, isVisible, onAddPane, onRemovePane, onConfigureButtons }: Props) {
   const cols = panes.length <= 1 ? 1 : panes.length <= 4 ? 2 : 3;
 
   return (
@@ -20,11 +22,20 @@ export function WorkspaceGrid({ comb, panes, isVisible, onAddPane, onRemovePane 
           <span className="workspace-branch">{comb.branch}</span>
         </div>
         <div className="workspace-actions">
-          <button className="btn btn-sm" onClick={() => onAddPane("terminal")}>
+          <button className="btn btn-sm" onClick={() => onAddPane()}>
             + Terminal
           </button>
-          <button className="btn btn-sm" onClick={() => onAddPane("agent")}>
-            + Agent
+          {customButtons.map((btn, i) => (
+            <button key={i} className="btn btn-sm" onClick={() => onAddPane(btn.cmd)}>
+              + {btn.label}
+            </button>
+          ))}
+          <button
+            className="workspace-configure-btn"
+            onClick={onConfigureButtons}
+            title="Configure buttons"
+          >
+            &#9881;
           </button>
         </div>
       </div>
@@ -55,7 +66,7 @@ export function WorkspaceGrid({ comb, panes, isVisible, onAddPane, onRemovePane 
               <TerminalPane
                 id={pane.id}
                 cwd={comb.path}
-                cmd={pane.type === "agent" ? "claude" : undefined}
+                cmd={pane.cmd}
                 isVisible={isVisible}
                 onExit={() => onRemovePane(pane.id)}
               />

@@ -31,13 +31,14 @@ beehive/
 │       ├── MainLayout.tsx        # Orchestrator: sidebar + workspace + overlays, per-hive runtime state
 │       ├── WorkspaceGrid.tsx     # Terminal grid for a comb — add/remove panes
 │       ├── NewCombModal.tsx      # Modal: comb creation form (name + branch dropdown)
+│       ├── CustomButtonsModal.tsx # Modal: configure per-hive custom buttons (up to 2)
 │       ├── SettingsScreen.tsx    # Paths, dependency status, reset
 │       └── TerminalPane.tsx      # xterm.js wrapper with PTY IPC, visibility toggling, Unicode 11
 ├── src-tauri/
 │   ├── src/
 │   │   ├── lib.rs          # Tauri app builder, registers all commands
 │   │   ├── pty.rs          # PTY management (create/write/resize/close), stores child handle
-│   │   └── hive.rs         # All hive/comb CRUD, git ops, config, preflight, pane persistence
+│   │   └── hive.rs         # All hive/comb CRUD, git ops, config, preflight, pane persistence, custom buttons
 │   ├── Cargo.toml          # Rust dependencies
 │   └── tauri.conf.json     # Tauri config (window 1400x900, dev port 1420)
 ├── plan.md                 # TODO list and design notes
@@ -99,11 +100,13 @@ cd /Users/nikita/beehive && npm run tauri build
 
 12. **Pane persistence:** Pane layouts (count, type, position) are saved to disk via `save_comb_panes` / `get_comb_panes` commands. Changes are debounce-saved (500ms). On app restart, pane layout is restored but PTY history is lost (expected).
 
+13. **Custom buttons per hive:** Each hive can have up to 2 custom buttons (stored as `CustomButton { label, cmd }` in `HiveInfo.customButtons`). These replace the old hardcoded "+ Agent" button in the workspace header. A gear icon opens `CustomButtonsModal` to configure buttons, with "previously used" suggestions from other hives. The `save_custom_buttons` command persists to state.json. Uses `#[serde(default)]` for backward compatibility with old state files.
+
 ## State & Config Files
 
 - `~/.beehive/config.json` — App-level config (beehive directory path)
 - `{beehiveDir}/beehive.json` — Beehive directory marker with version
-- `{beehiveDir}/repo_{name}/.hive/state.json` — Hive state (HiveInfo + combs list + pane configs per comb)
+- `{beehiveDir}/repo_{name}/.hive/state.json` — Hive state (HiveInfo + combs list + pane configs per comb + custom buttons)
 - Combs are full git clones at `{beehiveDir}/repo_{name}/{combName}/`
 
 ## Conventions

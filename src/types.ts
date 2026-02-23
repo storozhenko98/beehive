@@ -4,6 +4,11 @@ export interface BeehiveConfig {
   hives: string[]; // list of hive directory names (repo_*)
 }
 
+export interface CustomButton {
+  label: string;
+  cmd: string;
+}
+
 export interface HiveInfo {
   dirName: string; // repo_myapp
   repoUrl: string; // git@github.com:user/myapp.git
@@ -11,6 +16,7 @@ export interface HiveInfo {
   owner: string; // user
   description?: string;
   defaultBranch?: string;
+  customButtons?: CustomButton[];
 }
 
 export interface PaneConfig {

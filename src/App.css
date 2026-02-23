@@ -925,6 +925,25 @@ select option {
 .workspace-actions {
   display: flex;
   gap: 6px;
+  align-items: center;
+}
+
+.workspace-configure-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  transition: all 0.15s;
+}
+
+.workspace-configure-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: var(--bg-surface);
 }
 
 .workspace-grid {
@@ -1200,4 +1219,95 @@ code {
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
+}
+
+/* ---- Custom buttons modal ---- */
+
+.custom-buttons-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.custom-button-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border-radius: 6px;
+}
+
+.custom-button-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.custom-button-item-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.custom-button-item-cmd {
+  font-size: 11px;
+  font-family: 'Menlo', monospace;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.previously-used-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.previously-used-section h3 {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.previously-used-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color 0.1s;
+}
+
+.previously-used-item:hover {
+  background: var(--bg-surface);
+}
+
+.previously-used-item-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.previously-used-item-cmd {
+  font-size: 11px;
+  font-family: 'Menlo', monospace;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.previously-used-item-source {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-left: auto;
 }

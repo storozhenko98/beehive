@@ -3,10 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { Sidebar } from "./Sidebar";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewCombModal } from "./NewCombModal";
+import { CustomButtonsModal } from "./CustomButtonsModal";
 import { HiveListScreen } from "./HiveListScreen";
 import { SettingsScreen } from "./SettingsScreen";
 import { HelpScreen } from "./HelpScreen";
-import type { HiveInfo, Comb, PaneConfig } from "../types";
+import type { HiveInfo, Comb, PaneConfig, CustomButton } from "../types";
 
 interface Props {
   beehiveDir: string;
@@ -18,7 +19,8 @@ type Overlay =
   | { type: "newComb" }
   | { type: "manageHives" }
   | { type: "settings"; from: "sidebar" | "manageHives" }
-  | { type: "help"; from: "sidebar" | "manageHives" };
+  | { type: "help"; from: "sidebar" | "manageHives" }
+  | { type: "customButtons" };
 
 // Per-hive runtime state (combs, opened combs, panes, active comb)
 interface HiveRuntime {
@@ -141,15 +143,15 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
   }
 
   const addPane = useCallback(
-    (combId: string, type: "agent" | "terminal") => {
+    (combId: string, cmd?: string) => {
       if (!activeHiveDirName) return;
       const hiveDirName = activeHiveDirName;
       updateRuntime(hiveDirName, (rt) => {
         const current = rt.panesByComb.get(combId) ?? [];
         const newPane: PaneConfig = {
           id: crypto.randomUUID(),
-          type,
-          cmd: type === "agent" ? "claude" : undefined,
+          type: cmd ? "agent" : "terminal",
+          cmd: cmd || undefined,
         };
         const updated = [...current, newPane];
         debounceSavePanes(hiveDirName, combId, updated);
@@ -208,6 +210,27 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     openComb(comb);
   }
 
+  async function saveCustomButtons(buttons: CustomButton[]) {
+    if (!activeHiveDirName) return;
+    try {
+      await invoke("save_custom_buttons", {
+        beehiveDir,
+        dirName: activeHiveDirName,
+        buttons,
+      });
+      setHives((prev) =>
+        prev.map((h) =>
+          h.dirName === activeHiveDirName
+            ? { ...h, customButtons: buttons }
+            : h
+        )
+      );
+      setOverlay(null);
+    } catch (e) {
+      console.error("Failed to save custom buttons:", e);
+    }
+  }
+
   // Collect ALL opened combs across ALL hives for rendering
   const allOpenedCombs: { hive: HiveInfo; comb: Comb; panes: PaneConfig[]; isVisible: boolean }[] = [];
   for (const [dirName, runtime] of hiveRuntimes) {
@@ -246,14 +269,19 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
       />
 
       <div className="main-content">
-        {allOpenedCombs.map(({ comb, panes, isVisible }) => (
+        {allOpenedCombs.map(({ hive, comb, panes, isVisible }) => (
           <WorkspaceGrid
             key={comb.id}
             comb={comb}
             panes={panes}
+            customButtons={hive.customButtons ?? []}
             isVisible={isVisible}
-            onAddPane={(type) => addPane(comb.id, type)}
+            onAddPane={(cmd) => addPane(comb.id, cmd)}
             onRemovePane={(paneId) => removePane(comb.id, paneId)}
+            onConfigureButtons={() => {
+              setActiveHiveDirName(hive.dirName);
+              setOverlay({ type: "customButtons" });
+            }}
           />
         ))}
 
@@ -289,6 +317,10 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
             beehiveDir={beehiveDir}
             onSelectHive={(hive) => {
               setOverlay(null);
+              // Ensure hive is in local state (may have been added in the overlay)
+              setHives((prev) =>
+                prev.some((h) => h.dirName === hive.dirName) ? prev : [...prev, hive]
+              );
               selectHive(hive);
             }}
             onSettings={() => setOverlay({ type: "settings", from: "manageHives" })}
@@ -332,6 +364,22 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
             backLabel={overlay.from === "manageHives" ? "Back to Hives" : activeHive ? `Back to ${activeHive.repoName}` : "Back"}
           />
         </div>
+      )}
+
+      {overlay?.type === "customButtons" && activeHive && (
+        <CustomButtonsModal
+          buttons={activeHive.customButtons ?? []}
+          suggestions={hives
+            .filter((h) => h.dirName !== activeHiveDirName)
+            .flatMap((h) =>
+              (h.customButtons ?? []).map((b) => ({
+                ...b,
+                hiveName: h.repoName,
+              }))
+            )}
+          onSave={saveCustomButtons}
+          onClose={() => setOverlay(null)}
+        />
       )}
     </div>
   );
