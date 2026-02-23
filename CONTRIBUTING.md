@@ -60,16 +60,18 @@ beehive/
 │   ├── App.css                 # All styles (Catppuccin Mocha theme)
 │   ├── types.ts                # Shared types
 │   └── components/
-│       ├── MainLayout.tsx      # Sidebar + workspace orchestrator
-│       ├── Sidebar.tsx         # Hive/comb navigation
-│       ├── WorkspaceGrid.tsx   # Terminal pane grid
-│       ├── TerminalPane.tsx    # xterm.js + PTY integration
-│       ├── HiveListScreen.tsx  # Repo management
-│       ├── NewCombModal.tsx    # Comb creation
-│       ├── SettingsScreen.tsx  # App settings
-│       ├── HelpScreen.tsx      # In-app help
-│       ├── PreflightScreen.tsx # Dependency checker
-│       └── SetupScreen.tsx     # First-run setup
+│       ├── MainLayout.tsx        # Sidebar + workspace orchestrator
+│       ├── Sidebar.tsx           # Hive/comb navigation
+│       ├── WorkspaceGrid.tsx     # Terminal pane grid
+│       ├── TerminalPane.tsx      # xterm.js + PTY integration
+│       ├── HiveListScreen.tsx    # Repo management
+│       ├── NewCombModal.tsx      # Comb creation (with name validation)
+│       ├── CopyCombModal.tsx     # Comb duplication
+│       ├── CustomButtonsModal.tsx # Per-hive custom button config
+│       ├── SettingsScreen.tsx    # App settings
+│       ├── HelpScreen.tsx        # In-app help
+│       ├── PreflightScreen.tsx   # Dependency checker
+│       └── SetupScreen.tsx       # First-run setup
 ├── src-tauri/
 │   └── src/
 │       ├── lib.rs              # Tauri app builder, command registration

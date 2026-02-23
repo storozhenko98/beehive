@@ -10,6 +10,7 @@ Beehive is a desktop app that lets you manage multiple repositories, create isol
 - **Isolated workspaces** — Create full git clones ("combs") on any branch, each in its own directory
 - **Persistent terminals** — Real PTY sessions that stay alive when you switch between workspaces
 - **Agent panes** — Launch Claude Code (or any CLI tool) alongside your terminals
+- **Copy combs** — Duplicate a workspace including uncommitted work to experiment safely
 - **Flexible grid** — Add/remove terminal and agent panes per workspace
 - **Layout persistence** — Pane layouts are saved to disk and restored on restart
 
