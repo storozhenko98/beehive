@@ -94,7 +94,7 @@ beehive/
 
 ## Making Changes
 
-1. **Fork and branch** — Create a feature branch from `master`.
+1. **Fork and branch** — Create a feature branch from `main`.
 2. **Type-check** — Run `./build.sh --check` before committing. Both TypeScript and Rust must pass.
 3. **Keep it focused** — One feature or fix per PR. Small PRs get reviewed faster.
 4. **Test manually** — Run `npm run tauri dev` and verify your changes work end-to-end.
