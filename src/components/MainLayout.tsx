@@ -30,6 +30,7 @@ interface HiveRuntime {
   openedCombs: Set<string>;
   panesByComb: Map<string, PaneConfig[]>;
   activeCombId: string | null;
+  focusedPaneByComb: Map<string, string>;
 }
 
 export function MainLayout({ beehiveDir, onReset }: Props) {
@@ -82,12 +83,12 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
   function getOrCreateRuntime(dirName: string): HiveRuntime {
     const existing = hiveRuntimes.get(dirName);
     if (existing) return existing;
-    return { combs: [], openedCombs: new Set(), panesByComb: new Map(), activeCombId: null };
+    return { combs: [], openedCombs: new Set(), panesByComb: new Map(), activeCombId: null, focusedPaneByComb: new Map() };
   }
 
   function updateRuntime(dirName: string, updater: (rt: HiveRuntime) => HiveRuntime) {
     setHiveRuntimes((prev) => {
-      const current = prev.get(dirName) ?? { combs: [], openedCombs: new Set(), panesByComb: new Map(), activeCombId: null };
+      const current = prev.get(dirName) ?? { combs: [], openedCombs: new Set(), panesByComb: new Map(), activeCombId: null, focusedPaneByComb: new Map() };
       const updated = updater(current);
       const next = new Map(prev);
       next.set(dirName, updated);
@@ -178,7 +179,9 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         };
         const updated = [...current, newPane];
         debounceSavePanes(hiveDirName, combId, updated);
-        return { ...rt, panesByComb: new Map(rt.panesByComb).set(combId, updated) };
+        const newFocused = new Map(rt.focusedPaneByComb);
+        newFocused.set(combId, newPane.id);
+        return { ...rt, panesByComb: new Map(rt.panesByComb).set(combId, updated), focusedPaneByComb: newFocused };
       });
     },
     [activeHiveDirName, beehiveDir]
@@ -306,17 +309,32 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     }
   }
 
+  const handlePaneFocused = useCallback(
+    (combId: string, paneId: string) => {
+      if (!activeHiveDirName) return;
+      updateRuntime(activeHiveDirName, (rt) => {
+        const newFocused = new Map(rt.focusedPaneByComb);
+        newFocused.set(combId, paneId);
+        return { ...rt, focusedPaneByComb: newFocused };
+      });
+    },
+    [activeHiveDirName]
+  );
+
   // Collect ALL opened combs across ALL hives for rendering
-  const allOpenedCombs: { hive: HiveInfo; comb: Comb; panes: PaneConfig[]; isVisible: boolean }[] = [];
+  const allOpenedCombs: { hive: HiveInfo; comb: Comb; panes: PaneConfig[]; focusedPaneId: string | null; isVisible: boolean }[] = [];
   for (const [dirName, runtime] of hiveRuntimes) {
     const hive = hives.find((h) => h.dirName === dirName);
     if (!hive) continue;
     for (const comb of runtime.combs) {
       if (!runtime.openedCombs.has(comb.id)) continue;
+      const panes = runtime.panesByComb.get(comb.id) ?? [];
+      const focusedPaneId = runtime.focusedPaneByComb.get(comb.id) ?? panes[0]?.id ?? null;
       allOpenedCombs.push({
         hive,
         comb,
-        panes: runtime.panesByComb.get(comb.id) ?? [],
+        panes,
+        focusedPaneId,
         isVisible: dirName === activeHiveDirName && comb.id === runtime.activeCombId,
       });
     }
@@ -349,15 +367,17 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
       />
 
       <div className="main-content">
-        {allOpenedCombs.map(({ hive, comb, panes, isVisible }) => (
+        {allOpenedCombs.map(({ hive, comb, panes, focusedPaneId, isVisible }) => (
           <WorkspaceGrid
             key={comb.id}
             comb={comb}
             panes={panes}
             customButtons={hive.customButtons ?? []}
             isVisible={isVisible}
+            focusedPaneId={focusedPaneId}
             onAddPane={(cmd) => addPane(comb.id, cmd)}
             onRemovePane={(paneId) => removePane(comb.id, paneId)}
+            onPaneFocused={(paneId) => handlePaneFocused(comb.id, paneId)}
             onConfigureButtons={() => {
               setActiveHiveDirName(hive.dirName);
               setOverlay({ type: "customButtons" });

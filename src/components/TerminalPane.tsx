@@ -18,15 +18,19 @@ interface TerminalPaneProps {
   cmd?: string;
   args?: string[];
   isVisible: boolean;
+  shouldFocus?: boolean;
+  onFocus?: () => void;
   onExit?: () => void;
 }
 
-export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: TerminalPaneProps) {
+export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFocus, onExit }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   // Track which PTY session is "ours" to ignore stale exit events
   const activeSessionRef = useRef<string | null>(null);
+  const onFocusRef = useRef(onFocus);
+  onFocusRef.current = onFocus;
   // Drag-drop visual feedback (ref avoids stale closures in event callbacks)
   const [isDragOver, setIsDragOver] = useState(false);
   const isDragOverRef = useRef(false);
@@ -92,6 +96,10 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
       }
     });
 
+    // Report focus to parent so it can track the last-focused pane
+    const focusHandler = () => onFocusRef.current?.();
+    terminal.textarea?.addEventListener("focus", focusHandler);
+
     // Handle OSC 52 clipboard sequences from programs like zellij/tmux
     terminal.parser.registerOscHandler(52, (data) => {
       const idx = data.indexOf(";");
@@ -111,6 +119,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
     // Small delay to ensure the container is properly sized before fitting
     requestAnimationFrame(() => {
       fitAddon.fit();
+      terminal.focus();
 
       // Create the PTY using the unique session ID
       invoke("create_pty", {
@@ -194,6 +203,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
       resizeObserver.disconnect();
       onDataDisposable.dispose();
       onSelDisposable.dispose();
+      terminal.textarea?.removeEventListener("focus", focusHandler);
       unlistenOutput.then((fn) => fn());
       unlistenExit.then((fn) => fn());
       unlistenDragOver.then((fn) => fn());
@@ -213,6 +223,9 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
       // Delay to allow layout to settle after display change
       requestAnimationFrame(() => {
         fitAddonRef.current?.fit();
+        if (shouldFocus) {
+          terminalRef.current?.focus();
+        }
         if (terminalRef.current && currentSession) {
           invoke("resize_pty", {
             id: currentSession,
@@ -222,7 +235,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
         }
       });
     }
-  }, [isVisible]);
+  }, [isVisible, shouldFocus]);
 
   return (
     <div

@@ -6,12 +6,14 @@ interface Props {
   panes: PaneConfig[];
   customButtons: CustomButton[];
   isVisible: boolean;
+  focusedPaneId: string | null;
   onAddPane: (cmd?: string) => void;
   onRemovePane: (id: string) => void;
+  onPaneFocused: (paneId: string) => void;
   onConfigureButtons: () => void;
 }
 
-export function WorkspaceGrid({ comb, panes, customButtons, isVisible, onAddPane, onRemovePane, onConfigureButtons }: Props) {
+export function WorkspaceGrid({ comb, panes, customButtons, isVisible, focusedPaneId, onAddPane, onRemovePane, onPaneFocused, onConfigureButtons }: Props) {
   const cols = panes.length <= 1 ? 1 : panes.length <= 4 ? 2 : 3;
 
   return (
@@ -68,6 +70,8 @@ export function WorkspaceGrid({ comb, panes, customButtons, isVisible, onAddPane
                 cwd={comb.path}
                 cmd={pane.cmd}
                 isVisible={isVisible}
+                shouldFocus={focusedPaneId === pane.id}
+                onFocus={() => onPaneFocused(pane.id)}
                 onExit={() => onRemovePane(pane.id)}
               />
             </div>
