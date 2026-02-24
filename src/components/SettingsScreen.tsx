@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getVersion, getName, getTauriVersion } from "@tauri-apps/api/app";
+import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -25,9 +25,7 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [appVersion, setAppVersion] = useState("");
-  const [appName, setAppName] = useState("");
-  const [tauriVersion, setTauriVersion] = useState("");
-  const [cliTarget, setCliTarget] = useState<string | null | undefined>(undefined); // undefined=loading, null=not installed, string=target
+  const [cliTarget, setCliTarget] = useState<string | null | undefined>(undefined);
   const [cliLoading, setCliLoading] = useState(false);
   const [cliError, setCliError] = useState("");
   const [updateStatus, setUpdateStatus] = useState<
@@ -58,8 +56,6 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
     invoke<string>("get_app_config_path").then(setConfigPath);
     invoke<PreflightResult>("preflight_check").then(setPreflight);
     getVersion().then(setAppVersion);
-    getName().then(setAppName);
-    getTauriVersion().then(setTauriVersion);
     checkCli();
     checkForUpdates();
   }, [checkForUpdates]);
@@ -143,53 +139,28 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
         </div>
 
         <div className="settings-section">
-          <h3>About</h3>
-          <div className="settings-row">
-            <span className="settings-label">App</span>
-            <span className="settings-value">{appName || "..."}</span>
-          </div>
-          <div className="settings-row">
-            <span className="settings-label">Version</span>
-            <span className="settings-value">{appVersion || "..."}</span>
-          </div>
-          <div className="settings-row">
-            <span className="settings-label">Tauri</span>
-            <span className="settings-value">{tauriVersion || "..."}</span>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <h3>Updates</h3>
-          <div className="settings-row">
-            <span className="settings-label">Current version</span>
-            <span className="settings-value">{appVersion || "..."}</span>
-          </div>
+          <h3>Beehive v{appVersion || "..."}</h3>
           {updateStatus === "checking" && (
-            <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
+            <p style={{ color: "var(--text-muted)", fontSize: 12 }}>
               Checking for updates...
             </p>
           )}
           {updateStatus === "up-to-date" && (
-            <>
-              <p style={{ color: "var(--success)", fontSize: 12, marginTop: 8 }}>
-                You're on the latest version.
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <p style={{ color: "var(--success)", fontSize: 12 }}>
+                Up to date
               </p>
-              <button
-                className="btn btn-secondary"
-                onClick={checkForUpdates}
-                style={{ marginTop: 8 }}
-              >
-                Check for Updates
+              <button className="btn-text" onClick={checkForUpdates}>
+                Check again
               </button>
-            </>
+            </div>
           )}
           {updateStatus === "available" && updateInfo && (
             <>
-              <div className="settings-row">
-                <span className="settings-label">Available version</span>
-                <span className="settings-value">{updateInfo.version}</span>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <p style={{ color: "var(--accent)", fontSize: 12, marginBottom: 6 }}>
+                v{updateInfo.version} available
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
                 <button className="btn btn-primary" onClick={handleDownloadUpdate}>
                   Download & Install
                 </button>
@@ -200,7 +171,7 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
             </>
           )}
           {updateStatus === "downloading" && (
-            <div style={{ marginTop: 8 }}>
+            <div>
               <div style={{
                 height: 6,
                 borderRadius: 3,
@@ -217,18 +188,18 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
                 }} />
               </div>
               <p style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                Downloading update... {downloadProgress}%
+                Downloading... {downloadProgress}%
               </p>
             </div>
           )}
           {updateStatus === "restarting" && (
-            <p style={{ color: "var(--accent)", fontSize: 12, marginTop: 8 }}>
+            <p style={{ color: "var(--accent)", fontSize: 12 }}>
               Restarting...
             </p>
           )}
           {updateStatus === "error" && (
             <>
-              <p style={{ color: "var(--warning)", fontSize: 12, marginTop: 8 }}>
+              <p style={{ color: "var(--warning)", fontSize: 12 }}>
                 Could not check for updates.
               </p>
               {updateError && (
@@ -239,24 +210,12 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
               <button
                 className="btn btn-secondary"
                 onClick={checkForUpdates}
-                style={{ marginTop: 8 }}
+                style={{ marginTop: 6 }}
               >
                 Retry
               </button>
             </>
           )}
-        </div>
-
-        <div className="settings-section">
-          <h3>Paths</h3>
-          <div className="settings-row">
-            <span className="settings-label">Beehive directory</span>
-            <code className="settings-value">{beehiveDir}</code>
-          </div>
-          <div className="settings-row">
-            <span className="settings-label">App config file</span>
-            <code className="settings-value">{configPath}</code>
-          </div>
         </div>
 
         <div className="settings-section">
@@ -283,23 +242,19 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
               </div>
             </div>
           ) : (
-            <p style={{ color: "var(--text-muted)" }}>Checking...</p>
+            <p style={{ color: "var(--text-muted)", fontSize: 12 }}>Checking...</p>
           )}
         </div>
 
         <div className="settings-section">
           <h3>CLI Command</h3>
-          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 12 }}>
-            Install the <code>beehive</code> command to launch the app from any terminal.
+          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 8 }}>
+            Launch Beehive from any terminal with the <code>beehive</code> command.
           </p>
           {cliTarget === undefined ? (
             <p style={{ color: "var(--text-muted)", fontSize: 12 }}>Checking...</p>
           ) : cliTarget ? (
             <>
-              <div className="settings-row">
-                <span className="settings-label">Status</span>
-                <span className="settings-status ok">Installed</span>
-              </div>
               <div className="settings-row">
                 <span className="settings-label">Symlink</span>
                 <code className="settings-value">/usr/local/bin/beehive</code>
@@ -308,9 +263,9 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
                 className="btn btn-secondary"
                 onClick={handleUninstallCli}
                 disabled={cliLoading}
-                style={{ marginTop: 8 }}
+                style={{ marginTop: 6 }}
               >
-                {cliLoading ? "Removing..." : "Uninstall CLI"}
+                {cliLoading ? "Removing..." : "Uninstall"}
               </button>
             </>
           ) : (
@@ -319,45 +274,52 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
               onClick={handleInstallCli}
               disabled={cliLoading}
             >
-              {cliLoading ? "Installing..." : "Install beehive command"}
+              {cliLoading ? "Installing..." : "Install"}
             </button>
           )}
-          {cliError && <div className="error-box" style={{ marginTop: 8 }}>{cliError}</div>}
+          {cliError && <div className="error-box" style={{ marginTop: 6 }}>{cliError}</div>}
         </div>
 
         <div className="settings-section">
           <h3>Feedback</h3>
-          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 12 }}>
-            Found a bug or have a feature request?
-          </p>
           <div style={{ display: "flex", gap: 8 }}>
             <button
               className="btn btn-primary"
               onClick={() => openUrl("https://github.com/storozhenko98/beehive/issues/new")}
             >
-              Open Issue on GitHub
+              Report Issue
             </button>
             <button
               className="btn btn-secondary"
               onClick={() => openUrl("https://github.com/storozhenko98/beehive")}
             >
-              View Repository
+              GitHub
             </button>
           </div>
         </div>
 
         <div className="settings-section">
-          <h3>Danger Zone</h3>
-          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 12 }}>
-            Reset removes the app config file at <code>{configPath}</code>.
-            Your hives and combs on disk are not deleted — only the reference to
-            the beehive directory is cleared. Next launch will show the setup screen.
+          <h3>Advanced</h3>
+          <div className="settings-row">
+            <span className="settings-label">Beehive directory</span>
+            <code className="settings-value">{beehiveDir}</code>
+          </div>
+          <div className="settings-row">
+            <span className="settings-label">Config file</span>
+            <code className="settings-value">{configPath}</code>
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <h3>Reset</h3>
+          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 8 }}>
+            Clears the app config. Your repos and workspaces stay on disk.
           </p>
           <button
             className={`btn ${confirmReset ? "btn-danger" : "btn-secondary"}`}
             onClick={handleReset}
           >
-            {confirmReset ? "Are you sure? Click again to reset" : "Reset Beehive Setup"}
+            {confirmReset ? "Confirm Reset" : "Reset Beehive"}
           </button>
           {confirmReset && (
             <button

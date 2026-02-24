@@ -15,110 +15,92 @@ export function HelpScreen({ onBack, backLabel }: Props) {
         </div>
 
         <div className="help-section">
-          <h2>What is Beehive?</h2>
-          <p>
-            Beehive is a desktop app for managing multiple coding workspaces
-            across your repositories. It lets you work on several branches or
-            features in parallel, each with its own isolated set of terminals
-            and AI agent panes.
-          </p>
-        </div>
-
-        <div className="help-section">
-          <h2>Core Concepts</h2>
-
-          <div className="help-concept">
-            <h3>Hives</h3>
-            <p>
-              A <strong>hive</strong> represents a GitHub repository. When you
-              add a hive, Beehive registers the repo so you can create
-              workspaces from it. You can manage multiple hives — one per repo
-              you work on.
-            </p>
-            <div className="help-flow">Manage Hives &rarr; + Add Hive &rarr; paste a repo URL</div>
-          </div>
-
-          <div className="help-concept">
-            <h3>Combs</h3>
-            <p>
-              A <strong>comb</strong> is an isolated workspace clone of a hive.
-              Each comb lives in its own directory on disk, checked out to a
-              specific branch. This means you can have multiple combs for the
-              same repo — one per feature branch, bugfix, or experiment —
-              without them interfering with each other.
-            </p>
-            <div className="help-flow">Select a hive &rarr; + New Comb &rarr; name it &amp; pick a branch</div>
-          </div>
-
-          <div className="help-concept">
-            <h3>Panes</h3>
-            <p>
-              Each comb opens with a grid of <strong>panes</strong>. A pane is
-              either a <strong>terminal</strong> (a regular shell) or an{" "}
-              <strong>agent</strong> (launches Claude Code). You can add and
-              remove panes freely. Your pane layout is saved automatically and
-              restored when you reopen the comb.
-            </p>
-            <div className="help-flow">+ Terminal / + Agent buttons in the workspace header</div>
-          </div>
-        </div>
-
-        <div className="help-section">
-          <h2>Workflow</h2>
+          <h2>Quick Start</h2>
           <ol className="help-steps">
             <li>
-              <strong>Add a hive</strong> — Go to Manage Hives and add a
-              repository by its URL (e.g. <code>owner/repo</code>,
-              GitHub HTTPS, or SSH URL).
+              <strong>Add a repo</strong> — Go to Manage Hives and paste a
+              GitHub URL (HTTPS, SSH, or <code>owner/repo</code>).
             </li>
             <li>
-              <strong>Create a comb</strong> — Select the hive in the sidebar,
-              then click "+ New Comb". Give it a name and choose a branch.
-              Beehive clones the repo into an isolated directory.
+              <strong>Create a workspace</strong> — Select your hive, click
+              "+ New Comb", pick a name and branch. Beehive clones it into
+              an isolated directory.
             </li>
             <li>
-              <strong>Work</strong> — Click a comb in the sidebar to open it.
-              Use terminal panes for shell commands and agent panes to launch
-              Claude Code. Add as many panes as you need.
-            </li>
-            <li>
-              <strong>Switch freely</strong> — Click between combs and hives in
-              the sidebar. All your terminals stay alive in the background —
-              nothing is lost when you switch.
+              <strong>Open terminals</strong> — Click a comb to open it.
+              Use the header buttons to add terminal or agent panes.
             </li>
           </ol>
         </div>
 
         <div className="help-section">
-          <h2>Requirements</h2>
-          <p>
-            Beehive requires <code>git</code> and <code>gh</code> (GitHub CLI)
-            to be installed and available on your PATH. The <code>gh</code> CLI
-            must be authenticated (<code>gh auth login</code>). You can check
-            the status of these in Settings &rarr; Dependencies.
-          </p>
+          <h2>How It Works</h2>
+
+          <div className="help-concept">
+            <h3>Hives</h3>
+            <p>
+              A hive is a registered GitHub repo. Add one per project you
+              work on. Beehive tracks it so you can spin up workspaces from it.
+            </p>
+          </div>
+
+          <div className="help-concept">
+            <h3>Combs</h3>
+            <p>
+              Each comb is a full git clone on its own branch. You can have
+              multiple combs per hive — one per feature, bugfix, or experiment.
+              They're completely isolated from each other.
+            </p>
+          </div>
+
+          <div className="help-concept">
+            <h3>Panes</h3>
+            <p>
+              Each comb has a grid of panes. Add terminals for shell access
+              or agent panes that launch your configured command (e.g. Claude
+              Code). Layouts save automatically.
+            </p>
+          </div>
         </div>
 
         <div className="help-section">
-          <h2>Tips</h2>
+          <h2>Good to Know</h2>
           <ul className="help-tips">
             <li>
-              Combs are full git clones — you can run any git command inside
-              them, push, pull, rebase, etc.
+              Switching between combs or hives keeps all terminals alive
+              in the background — nothing is killed.
             </li>
             <li>
-              Closing a pane (x button or typing <code>exit</code>) removes it
-              from the grid. The layout saves automatically.
+              Navigating to Settings, Help, or Manage Hives is the same —
+              everything runs underneath the overlay.
             </li>
             <li>
-              Navigating to Manage Hives or Settings doesn't kill your
-              terminals — they keep running underneath.
+              Combs are real git repos. You can push, pull, rebase,
+              switch branches — anything you'd do in a normal clone.
             </li>
             <li>
-              Deleting a comb removes it from the sidebar and deletes the
-              directory on disk. This cannot be undone.
+              Closing a pane (<code>exit</code> or the x button) removes
+              it from the grid. The layout updates on disk automatically.
+            </li>
+            <li>
+              You can duplicate a comb with the copy icon in the sidebar.
+              This does a full <code>cp&nbsp;-r</code> including uncommitted work.
+            </li>
+            <li>
+              Deleting a comb removes it from disk permanently. There is
+              no undo.
             </li>
           </ul>
+        </div>
+
+        <div className="help-section">
+          <h2>Requirements</h2>
+          <p>
+            <code>git</code> and <code>gh</code> (GitHub CLI) must be
+            installed and on your PATH. The <code>gh</code> CLI must be
+            authenticated — run <code>gh auth login</code> if needed.
+            Check status in Settings &rarr; Dependencies.
+          </p>
         </div>
       </div>
     </div>
