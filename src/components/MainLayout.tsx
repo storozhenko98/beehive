@@ -242,14 +242,13 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
       combId: comb.id,
     })
       .then(() => {
-        // Clone succeeded — mark cloning = false and auto-open
+        // Clone succeeded — mark cloning = false
         updateRuntime(hiveDirName, (rt) => ({
           ...rt,
           combs: rt.combs.map((c) =>
             c.id === comb.id ? { ...c, cloning: false } : c
           ),
         }));
-        openComb({ ...comb, cloning: false });
       })
       .catch((e) => {
         console.error("Clone failed:", e);
