@@ -84,6 +84,30 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
+    // Copy xterm.js selection to system clipboard (mouse selection)
+    const onSelDisposable = terminal.onSelectionChange(() => {
+      const sel = terminal.getSelection();
+      if (sel) {
+        navigator.clipboard.writeText(sel).catch(() => {});
+      }
+    });
+
+    // Handle OSC 52 clipboard sequences from programs like zellij/tmux
+    terminal.parser.registerOscHandler(52, (data) => {
+      const idx = data.indexOf(";");
+      if (idx === -1) return true;
+      const payload = data.slice(idx + 1);
+      if (payload && payload !== "?") {
+        try {
+          const text = atob(payload);
+          navigator.clipboard.writeText(text).catch(() => {});
+        } catch {
+          // invalid base64
+        }
+      }
+      return true;
+    });
+
     // Small delay to ensure the container is properly sized before fitting
     requestAnimationFrame(() => {
       fitAddon.fit();
@@ -169,6 +193,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
     return () => {
       resizeObserver.disconnect();
       onDataDisposable.dispose();
+      onSelDisposable.dispose();
       unlistenOutput.then((fn) => fn());
       unlistenExit.then((fn) => fn());
       unlistenDragOver.then((fn) => fn());
