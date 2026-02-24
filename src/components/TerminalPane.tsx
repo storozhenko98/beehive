@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -6,6 +6,11 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
+
+interface DragDropPayload {
+  paths: string[];
+  position: { x: number; y: number };
+}
 
 interface TerminalPaneProps {
   id: string;
@@ -22,6 +27,13 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
   const fitAddonRef = useRef<FitAddon | null>(null);
   // Track which PTY session is "ours" to ignore stale exit events
   const activeSessionRef = useRef<string | null>(null);
+  // Drag-drop visual feedback (ref avoids stale closures in event callbacks)
+  const [isDragOver, setIsDragOver] = useState(false);
+  const isDragOverRef = useRef(false);
+  function updateDragOver(value: boolean) {
+    isDragOverRef.current = value;
+    setIsDragOver(value);
+  }
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -120,11 +132,48 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
     });
     resizeObserver.observe(containerRef.current);
 
+    // --- Drag-drop: listen for Tauri's global drag events ---
+    // Hit-test helper: check if window-relative position falls inside this pane
+    function isOverThisPane(x: number, y: number): boolean {
+      const el = document.elementFromPoint(x, y);
+      return !!containerRef.current && containerRef.current.contains(el);
+    }
+
+    const unlistenDragOver = listen<DragDropPayload>("tauri://drag-over", (event) => {
+      const { x, y } = event.payload.position;
+      const over = isOverThisPane(x, y);
+      if (over !== isDragOverRef.current) {
+        updateDragOver(over);
+      }
+    });
+
+    const unlistenDrop = listen<DragDropPayload>("tauri://drag-drop", (event) => {
+      updateDragOver(false);
+
+      const { paths, position } = event.payload;
+      if (!isOverThisPane(position.x, position.y)) return;
+      if (!terminalRef.current) return;
+      if (paths.length === 0) return;
+
+      // Paste the raw path(s) through xterm.js so bracketed paste mode
+      // is handled correctly. This mimics how real terminals (iTerm2, etc.)
+      // handle file drops — the running application (OpenCode, Claude Code)
+      // receives a paste event and can detect the file path as an image.
+      terminalRef.current.paste(paths.join(" "));
+    });
+
+    const unlistenDragLeave = listen("tauri://drag-leave", () => {
+      updateDragOver(false);
+    });
+
     return () => {
       resizeObserver.disconnect();
       onDataDisposable.dispose();
       unlistenOutput.then((fn) => fn());
       unlistenExit.then((fn) => fn());
+      unlistenDragOver.then((fn) => fn());
+      unlistenDrop.then((fn) => fn());
+      unlistenDragLeave.then((fn) => fn());
       invoke("close_pty", { id: sessionId }).catch(() => {});
       terminal.dispose();
       terminalRef.current = null;
@@ -153,7 +202,9 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
   return (
     <div
       ref={containerRef}
-      style={{ width: "100%", height: "100%", padding: "4px" }}
-    />
+      style={{ width: "100%", height: "100%", padding: "4px", position: "relative" }}
+    >
+      {isDragOver && <div className="drop-overlay">Drop file to paste path</div>}
+    </div>
   );
 }
