@@ -33,6 +33,7 @@ export interface Comb {
   path: string; // absolute path to the workspace clone
   createdAt: string;
   panes: PaneConfig[];
+  cloning?: boolean;
 }
 
 export interface HiveState {

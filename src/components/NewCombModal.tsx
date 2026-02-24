@@ -138,7 +138,7 @@ export function NewCombModal({ beehiveDir, hive, existingNames, onCreated, onClo
     setLoading(true);
     setError("");
     try {
-      const comb = await invoke<Comb>("create_comb", {
+      const comb = await invoke<Comb>("create_comb_start", {
         beehiveDir,
         dirName: hive.dirName,
         name: name.trim(),
@@ -201,7 +201,7 @@ export function NewCombModal({ beehiveDir, hive, existingNames, onCreated, onClo
         {error && <div className="error-box">{error}</div>}
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn btn-primary" onClick={handleCreate} disabled={loading || !!nameValidation}>
-            {loading ? "Cloning..." : "Create Comb"}
+            {loading ? "Creating..." : "Create Comb"}
           </button>
           <button className="btn btn-secondary" onClick={onClose}>
             Cancel

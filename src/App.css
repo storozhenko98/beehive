@@ -772,6 +772,26 @@ select option {
   background: rgba(243, 139, 168, 0.1);
 }
 
+.sidebar-comb-item.cloning {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sidebar-comb-item.cloning:hover {
+  background: transparent;
+}
+
+.sidebar-comb-cloning {
+  font-size: 10px;
+  color: var(--accent);
+  animation: pulse-cloning 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-cloning {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 .sidebar-empty {
   padding: 12px 16px;
   color: var(--text-muted);

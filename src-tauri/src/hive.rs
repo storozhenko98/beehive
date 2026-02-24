@@ -53,6 +53,8 @@ pub struct Comb {
     pub created_at: String,
     #[serde(default)]
     pub panes: Vec<PaneConfig>,
+    #[serde(default)]
+    pub cloning: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -480,7 +482,7 @@ pub async fn list_branches(beehive_dir: String, dir_name: String) -> Result<Vec<
 }
 
 #[tauri::command]
-pub async fn create_comb(
+pub async fn create_comb_start(
     beehive_dir: String,
     dir_name: String,
     name: String,
@@ -494,6 +496,39 @@ pub async fn create_comb(
     let hive_dir = Path::new(&beehive_dir).join(&dir_name);
     let comb_dir = hive_dir.join(&name);
 
+    let comb = Comb {
+        id: comb_id,
+        name: name.clone(),
+        branch,
+        path: comb_dir.to_string_lossy().to_string(),
+        created_at: chrono_now(),
+        panes: vec![],
+        cloning: true,
+    };
+
+    state.combs.push(comb.clone());
+    save_hive_state(&beehive_dir, &dir_name, &state)?;
+
+    Ok(comb)
+}
+
+#[tauri::command]
+pub async fn create_comb_clone(
+    beehive_dir: String,
+    dir_name: String,
+    comb_id: String,
+) -> Result<(), String> {
+    let state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    let comb = state
+        .combs
+        .iter()
+        .find(|c| c.id == comb_id)
+        .ok_or_else(|| format!("Comb '{}' not found", comb_id))?
+        .clone();
+
+    let comb_dir = Path::new(&comb.path);
+
     // Clone the repo into the comb directory
     let clone_output = cmd_with_path("git")
         .args(["clone", &state.info.repo_url, comb_dir.to_str().unwrap()])
@@ -501,6 +536,11 @@ pub async fn create_comb(
         .map_err(|e| format!("Clone failed: {}", e))?;
 
     if !clone_output.status.success() {
+        // Clean up: remove comb from state and directory
+        let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+        state.combs.retain(|c| c.id != comb_id);
+        let _ = save_hive_state(&beehive_dir, &dir_name, &state);
+        let _ = fs::remove_dir_all(comb_dir);
         return Err(format!(
             "Git clone failed: {}",
             String::from_utf8_lossy(&clone_output.stderr)
@@ -509,43 +549,41 @@ pub async fn create_comb(
 
     // Checkout the branch
     let checkout_output = cmd_with_path("git")
-        .args(["checkout", &branch])
-        .current_dir(&comb_dir)
+        .args(["checkout", &comb.branch])
+        .current_dir(comb_dir)
         .output()
         .map_err(|e| format!("Checkout failed: {}", e))?;
 
     if !checkout_output.status.success() {
         // Try creating the branch if it doesn't exist remotely
         let checkout_new = cmd_with_path("git")
-            .args(["checkout", "-b", &branch])
-            .current_dir(&comb_dir)
+            .args(["checkout", "-b", &comb.branch])
+            .current_dir(comb_dir)
             .output()
             .map_err(|e| format!("Checkout -b failed: {}", e))?;
 
         if !checkout_new.status.success() {
-            // Clean up failed clone
-            let _ = fs::remove_dir_all(&comb_dir);
+            // Clean up: remove comb from state and directory
+            let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+            state.combs.retain(|c| c.id != comb_id);
+            let _ = save_hive_state(&beehive_dir, &dir_name, &state);
+            let _ = fs::remove_dir_all(comb_dir);
             return Err(format!(
                 "Failed to checkout branch '{}': {}",
-                branch,
+                comb.branch,
                 String::from_utf8_lossy(&checkout_new.stderr)
             ));
         }
     }
 
-    let comb = Comb {
-        id: comb_id,
-        name: name.clone(),
-        branch,
-        path: comb_dir.to_string_lossy().to_string(),
-        created_at: chrono_now(),
-        panes: vec![],
-    };
-
-    state.combs.push(comb.clone());
+    // Success: mark cloning = false
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+    if let Some(c) = state.combs.iter_mut().find(|c| c.id == comb_id) {
+        c.cloning = false;
+    }
     save_hive_state(&beehive_dir, &dir_name, &state)?;
 
-    Ok(comb)
+    Ok(())
 }
 
 fn get_git_branch(path: &str) -> Option<String> {
@@ -721,6 +759,7 @@ pub async fn copy_comb(
         path: new_dir.to_string_lossy().to_string(),
         created_at: chrono_now(),
         panes: vec![],
+        cloning: false,
     };
 
     state.combs.push(comb.clone());

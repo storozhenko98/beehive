@@ -225,12 +225,37 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
 
   function handleCombCreated(comb: Comb) {
     if (!activeHiveDirName) return;
+    const hiveDirName = activeHiveDirName;
     setOverlay(null);
-    updateRuntime(activeHiveDirName, (rt) => ({
+    updateRuntime(hiveDirName, (rt) => ({
       ...rt,
       combs: [...rt.combs, comb],
     }));
-    openComb(comb);
+    // Do NOT open the comb yet — it's still cloning
+    // Fire background clone
+    invoke("create_comb_clone", {
+      beehiveDir,
+      dirName: hiveDirName,
+      combId: comb.id,
+    })
+      .then(() => {
+        // Clone succeeded — mark cloning = false and auto-open
+        updateRuntime(hiveDirName, (rt) => ({
+          ...rt,
+          combs: rt.combs.map((c) =>
+            c.id === comb.id ? { ...c, cloning: false } : c
+          ),
+        }));
+        openComb({ ...comb, cloning: false });
+      })
+      .catch((e) => {
+        console.error("Clone failed:", e);
+        // Remove the failed comb from runtime
+        updateRuntime(hiveDirName, (rt) => ({
+          ...rt,
+          combs: rt.combs.filter((c) => c.id !== comb.id),
+        }));
+      });
   }
 
   const [copyCombLoading, setCopyCombLoading] = useState(false);

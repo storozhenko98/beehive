@@ -94,51 +94,59 @@ export function Sidebar({
           {combs.map((comb) => (
             <div
               key={comb.id}
-              className={`sidebar-comb-item ${comb.id === activeCombId ? "active" : ""}`}
-              onClick={() => onSelectComb(comb)}
+              className={`sidebar-comb-item ${comb.id === activeCombId ? "active" : ""} ${comb.cloning ? "cloning" : ""}`}
+              onClick={() => !comb.cloning && onSelectComb(comb)}
             >
               <div className="sidebar-comb-info">
                 <span className="sidebar-comb-name">{comb.name}</span>
-                <span className="sidebar-comb-branch">{comb.branch}</span>
+                {comb.cloning ? (
+                  <span className="sidebar-comb-cloning">Cloning...</span>
+                ) : (
+                  <span className="sidebar-comb-branch">{comb.branch}</span>
+                )}
               </div>
-              {confirmDeleteId === comb.id ? (
-                <div className="delete-confirm-inline" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="btn-sm btn-danger"
-                    onClick={() => {
-                      setConfirmDeleteId(null);
-                      onDeleteComb(comb.id);
-                    }}
-                  >
-                    Sure?
-                  </button>
-                  <button className="btn-sm" onClick={() => setConfirmDeleteId(null)}>
-                    No
-                  </button>
-                </div>
-              ) : (
-                <div className="sidebar-comb-actions">
-                  <button
-                    className="sidebar-comb-copy"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onCopyComb(comb.id);
-                    }}
-                    title="Copy comb"
-                  >
-                    &#x2398;
-                  </button>
-                  <button
-                    className="sidebar-comb-delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmDeleteId(comb.id);
-                    }}
-                    title="Delete comb"
-                  >
-                    x
-                  </button>
-                </div>
+              {!comb.cloning && (
+                <>
+                  {confirmDeleteId === comb.id ? (
+                    <div className="delete-confirm-inline" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="btn-sm btn-danger"
+                        onClick={() => {
+                          setConfirmDeleteId(null);
+                          onDeleteComb(comb.id);
+                        }}
+                      >
+                        Sure?
+                      </button>
+                      <button className="btn-sm" onClick={() => setConfirmDeleteId(null)}>
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="sidebar-comb-actions">
+                      <button
+                        className="sidebar-comb-copy"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCopyComb(comb.id);
+                        }}
+                        title="Copy comb"
+                      >
+                        &#x2398;
+                      </button>
+                      <button
+                        className="sidebar-comb-delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteId(comb.id);
+                        }}
+                        title="Delete comb"
+                      >
+                        x
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           ))}
