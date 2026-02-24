@@ -227,7 +227,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, onExit }: Terminal
   return (
     <div
       ref={containerRef}
-      style={{ width: "100%", height: "100%", padding: "4px", position: "relative" }}
+      style={{ width: "100%", height: "100%", position: "relative" }}
     >
       {isDragOver && <div className="drop-overlay">Drop file to paste path</div>}
     </div>
