@@ -13,6 +13,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Source .env if it exists (for local builds)
+if [ -f ".env" ]; then
+  set -a
+  source .env
+  set +a
+fi
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
@@ -81,13 +88,14 @@ do_build() {
   echo ""
 
   # Set notarization env vars — Tauri reads these automatically
-  for var in APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD; do
+  for var in APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD TAURI_SIGNING_PRIVATE_KEY; do
     if [ -z "${!var:-}" ]; then
       red "Error: $var not set."
       echo "Set notarization env vars before running:"
       echo "  export APPLE_ID='your@email.com'"
       echo "  export APPLE_TEAM_ID='XXXXXXXXXX'"
       echo "  export APPLE_PASSWORD='xxxx-xxxx-xxxx-xxxx'"
+      echo "  export TAURI_SIGNING_PRIVATE_KEY='...'"
       exit 1
     fi
   done

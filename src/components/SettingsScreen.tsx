@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion, getName, getTauriVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 interface PreflightResult {
   ok: boolean;
@@ -28,6 +30,29 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
   const [cliTarget, setCliTarget] = useState<string | null | undefined>(undefined); // undefined=loading, null=not installed, string=target
   const [cliLoading, setCliLoading] = useState(false);
   const [cliError, setCliError] = useState("");
+  const [updateStatus, setUpdateStatus] = useState<
+    "checking" | "up-to-date" | "available" | "downloading" | "restarting" | "error"
+  >("checking");
+  const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
+  const [updateError, setUpdateError] = useState("");
+  const [downloadProgress, setDownloadProgress] = useState(0);
+
+  const checkForUpdates = useCallback(async () => {
+    setUpdateStatus("checking");
+    setUpdateError("");
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateInfo(update);
+        setUpdateStatus("available");
+      } else {
+        setUpdateStatus("up-to-date");
+      }
+    } catch (e) {
+      setUpdateError(`${e}`);
+      setUpdateStatus("error");
+    }
+  }, []);
 
   useEffect(() => {
     invoke<string>("get_app_config_path").then(setConfigPath);
@@ -36,7 +61,8 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
     getName().then(setAppName);
     getTauriVersion().then(setTauriVersion);
     checkCli();
-  }, []);
+    checkForUpdates();
+  }, [checkForUpdates]);
 
   async function checkCli() {
     try {
@@ -71,6 +97,33 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
     setCliLoading(false);
   }
 
+  async function handleDownloadUpdate() {
+    if (!updateInfo) return;
+    setUpdateStatus("downloading");
+    setDownloadProgress(0);
+    try {
+      let totalBytes = 0;
+      let downloadedBytes = 0;
+      await updateInfo.downloadAndInstall((event) => {
+        if (event.event === "Started" && event.data.contentLength) {
+          totalBytes = event.data.contentLength;
+        } else if (event.event === "Progress") {
+          downloadedBytes += event.data.chunkLength;
+          if (totalBytes > 0) {
+            setDownloadProgress(Math.round((downloadedBytes / totalBytes) * 100));
+          }
+        } else if (event.event === "Finished") {
+          setDownloadProgress(100);
+        }
+      });
+      setUpdateStatus("restarting");
+      await relaunch();
+    } catch (e) {
+      setUpdateError(`${e}`);
+      setUpdateStatus("error");
+    }
+  }
+
   function handleReset() {
     if (!confirmReset) {
       setConfirmReset(true);
@@ -103,6 +156,95 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
             <span className="settings-label">Tauri</span>
             <span className="settings-value">{tauriVersion || "..."}</span>
           </div>
+        </div>
+
+        <div className="settings-section">
+          <h3>Updates</h3>
+          <div className="settings-row">
+            <span className="settings-label">Current version</span>
+            <span className="settings-value">{appVersion || "..."}</span>
+          </div>
+          {updateStatus === "checking" && (
+            <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
+              Checking for updates...
+            </p>
+          )}
+          {updateStatus === "up-to-date" && (
+            <>
+              <p style={{ color: "var(--success)", fontSize: 12, marginTop: 8 }}>
+                You're on the latest version.
+              </p>
+              <button
+                className="btn btn-secondary"
+                onClick={checkForUpdates}
+                style={{ marginTop: 8 }}
+              >
+                Check for Updates
+              </button>
+            </>
+          )}
+          {updateStatus === "available" && updateInfo && (
+            <>
+              <div className="settings-row">
+                <span className="settings-label">Available version</span>
+                <span className="settings-value">{updateInfo.version}</span>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button className="btn btn-primary" onClick={handleDownloadUpdate}>
+                  Download & Install
+                </button>
+                <button className="btn btn-secondary" onClick={checkForUpdates}>
+                  Check Again
+                </button>
+              </div>
+            </>
+          )}
+          {updateStatus === "downloading" && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{
+                height: 6,
+                borderRadius: 3,
+                background: "var(--bg-surface)",
+                overflow: "hidden",
+                marginBottom: 6,
+              }}>
+                <div style={{
+                  height: "100%",
+                  width: `${downloadProgress}%`,
+                  background: "var(--accent)",
+                  borderRadius: 3,
+                  transition: "width 0.2s",
+                }} />
+              </div>
+              <p style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                Downloading update... {downloadProgress}%
+              </p>
+            </div>
+          )}
+          {updateStatus === "restarting" && (
+            <p style={{ color: "var(--accent)", fontSize: 12, marginTop: 8 }}>
+              Restarting...
+            </p>
+          )}
+          {updateStatus === "error" && (
+            <>
+              <p style={{ color: "var(--warning)", fontSize: 12, marginTop: 8 }}>
+                Could not check for updates.
+              </p>
+              {updateError && (
+                <p style={{ color: "var(--warning)", fontSize: 11, marginTop: 4, fontFamily: "'Menlo', monospace", opacity: 0.7 }}>
+                  {updateError}
+                </p>
+              )}
+              <button
+                className="btn btn-secondary"
+                onClick={checkForUpdates}
+                style={{ marginTop: 8 }}
+              >
+                Retry
+              </button>
+            </>
+          )}
         </div>
 
         <div className="settings-section">

@@ -8,6 +8,8 @@
     "core:event:default",
     "core:window:default",
     "opener:default",
-    "dialog:default"
+    "dialog:default",
+    "updater:default",
+    "process:default"
   ]
 }

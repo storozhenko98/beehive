@@ -1,6 +1,6 @@
 [package]
 name = "beehive"
-version = "0.1.3"
+version = "0.1.4"
 description = "Orchestrate coding agents across isolated git workspaces"
 authors = ["Mykyta Storozhenko <storozhenkomykyta@gmail.com>"]
 repository = "https://github.com/storozhenko98/beehive"
@@ -24,4 +24,6 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
