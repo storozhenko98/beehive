@@ -1,7 +1,16 @@
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::config::*;
 use crate::terminal::EmbeddedTerminal;
+
+/// Background clone result.
+pub struct CloneResult {
+    pub comb: Result<Comb, String>,
+    pub comb_name: String,
+    #[allow(dead_code)]
+    pub hive_dir_name: String,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -33,12 +42,29 @@ pub enum AppMode {
         message: String,
         action: ConfirmAction,
     },
+    BranchPicker {
+        hive_dir_name: String,
+        comb_name: String,
+        branches: Vec<String>,
+        default_branch: String,
+        filter: String,
+        selected: usize,
+    },
+    Help,
+    Settings {
+        preflight: PreflightResult,
+    },
 }
 
 pub enum InputAction {
     NewCombName { hive_dir_name: String },
-    NewCombBranch { hive_dir_name: String, comb_name: String },
     AddHiveUrl,
+    CopyCombName {
+        hive_dir_name: String,
+        #[allow(dead_code)]
+        source_comb_name: String,
+        source_comb_path: String,
+    },
 }
 
 pub enum ConfirmAction {
@@ -51,6 +77,7 @@ pub enum ConfirmAction {
         dir_name: String,
         repo_name: String,
     },
+    ResetConfig,
     Quit,
 }
 
@@ -65,6 +92,7 @@ pub struct App {
     pub focus: Focus,
     pub terminals: HashMap<String, EmbeddedTerminal>,
     pub last_term_size: (u16, u16),
+    pub pending_clone: Option<Arc<Mutex<Option<CloneResult>>>>,
 }
 
 impl App {
@@ -80,6 +108,7 @@ impl App {
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
             last_term_size: (0, 0),
+            pending_clone: None,
         };
         app.load_all(true)?;
         Ok(app)
@@ -206,10 +235,9 @@ impl App {
 
     /// Switch to or create a terminal for the given comb.
     pub fn open_terminal(&mut self, comb_id: &str, comb_path: &str) {
-        // If terminal already exists for this comb, just switch focus
         if self.terminals.contains_key(comb_id) {
             self.focus = Focus::Terminal;
-            self.last_term_size = (0, 0); // Force resize check
+            self.last_term_size = (0, 0);
             return;
         }
 
@@ -229,14 +257,12 @@ impl App {
         }
     }
 
-    /// Get the active terminal (if any).
     pub fn active_terminal(&self) -> Option<&EmbeddedTerminal> {
         self.active_comb_id
             .as_ref()
             .and_then(|id| self.terminals.get(id))
     }
 
-    /// Get the active comb's name (for display in terminal title).
     pub fn active_comb_name(&self) -> Option<String> {
         let active_id = self.active_comb_id.as_ref()?;
         for item in &self.items {
@@ -249,7 +275,6 @@ impl App {
         None
     }
 
-    /// Remove terminal for a specific comb (e.g. on delete).
     pub fn remove_terminal(&mut self, comb_id: &str) {
         self.terminals.remove(comb_id);
         if self.active_comb_id.as_deref() == Some(comb_id) {
@@ -258,7 +283,6 @@ impl App {
         }
     }
 
-    /// Remove all terminals for combs belonging to a hive.
     pub fn remove_hive_terminals(&mut self, hive_dir_name: &str) {
         let ids_to_remove: Vec<String> = self
             .items
@@ -293,6 +317,29 @@ impl App {
             };
         } else {
             self.status_message = Some("Add a hive first with 'a'".to_string());
+        }
+    }
+
+    pub fn start_copy_comb(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        if let NavItem::Comb {
+            hive_dir_name,
+            comb,
+        } = &self.items[self.selected]
+        {
+            self.mode = AppMode::Input {
+                prompt: format!("Copy '{}' as", comb.name),
+                value: String::new(),
+                action: InputAction::CopyCombName {
+                    hive_dir_name: hive_dir_name.clone(),
+                    source_comb_name: comb.name.clone(),
+                    source_comb_path: comb.path.clone(),
+                },
+            };
+        } else {
+            self.status_message = Some("Select a comb to copy".to_string());
         }
     }
 
@@ -339,6 +386,15 @@ impl App {
             message: "Quit Beehive?".to_string(),
             action: ConfirmAction::Quit,
         };
+    }
+
+    pub fn open_settings(&mut self) {
+        let pf = preflight();
+        self.mode = AppMode::Settings { preflight: pf };
+    }
+
+    pub fn open_help(&mut self) {
+        self.mode = AppMode::Help;
     }
 
     pub fn selected_hive_dir(&self) -> Option<String> {

@@ -5,6 +5,7 @@ mod ui;
 
 use std::io;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossterm::{
@@ -14,7 +15,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::{App, AppMode, ConfirmAction, Focus, InputAction};
+use app::{App, AppMode, CloneResult, ConfirmAction, Focus, InputAction};
 use config::*;
 use terminal::key_to_bytes;
 
@@ -28,6 +29,19 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // Preflight checks before entering TUI
+    let pf = preflight();
+    if pf.git.is_none() {
+        eprintln!("Error: git is not installed. Beehive requires git.");
+        std::process::exit(1);
+    }
+    let mut warnings: Vec<String> = vec![];
+    if pf.gh.is_none() {
+        warnings.push("gh CLI not found — 'add hive' will not work".to_string());
+    } else if !pf.gh_auth {
+        warnings.push("gh not authenticated — run 'gh auth login'".to_string());
+    }
+
     let beehive_dir = ensure_config()?;
 
     enable_raw_mode()?;
@@ -36,7 +50,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, beehive_dir);
+    let mut app =
+        App::new(beehive_dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    if let Some(warn) = warnings.first() {
+        app.status_message = Some(warn.clone());
+    }
+
+    let result = run_app(&mut terminal, &mut app);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -84,18 +105,23 @@ fn ensure_config() -> Result<String, Box<dyn std::error::Error>> {
     Ok(dir)
 }
 
-fn run_app(terminal: &mut Term, beehive_dir: String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut app =
-        App::new(beehive_dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-
+fn run_app(terminal: &mut Term, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tick_count: u32 = 0;
     loop {
-        // Draw and get terminal pane area
+        // Check for completed async clone
+        check_pending_clone(app);
+
+        // Refresh branch labels every ~5 seconds (312 * 16ms)
+        tick_count = tick_count.wrapping_add(1);
+        if tick_count % 312 == 0 {
+            app.refresh();
+        }
+
         let mut term_area = ratatui::layout::Rect::default();
         terminal.draw(|frame| {
-            term_area = ui::render(frame, &app);
+            term_area = ui::render(frame, app);
         })?;
 
-        // Resize active PTY if terminal area changed
         if let Some(t) = app.active_terminal() {
             let new_size = (term_area.width, term_area.height);
             if new_size != app.last_term_size && new_size.0 > 0 && new_size.1 > 0 {
@@ -104,15 +130,12 @@ fn run_app(terminal: &mut Term, beehive_dir: String) -> Result<(), Box<dyn std::
             }
         }
 
-        // Poll with short timeout for smooth terminal output rendering
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) => {
-                    handle_key(&mut app, key, terminal)?;
+                    handle_key(app, key, terminal)?;
                 }
-                Event::Resize(_, _) => {
-                    // Will be handled on next draw cycle
-                }
+                Event::Resize(_, _) => {}
                 _ => {}
             }
         }
@@ -125,8 +148,31 @@ fn run_app(terminal: &mut Term, beehive_dir: String) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+fn check_pending_clone(app: &mut App) {
+    if let Some(ref slot) = app.pending_clone {
+        let mut guard = slot.lock().unwrap();
+        if let Some(result) = guard.take() {
+            drop(guard);
+            app.pending_clone = None;
+            match result.comb {
+                Ok(comb) => {
+                    app.status_message = Some(format!("Created '{}'", result.comb_name));
+                    let id = comb.id.clone();
+                    let path = comb.path.clone();
+                    app.active_comb_id = Some(id.clone());
+                    app.refresh();
+                    app.open_terminal(&id, &path);
+                }
+                Err(e) => {
+                    app.status_message = Some(format!("Clone failed: {}", e));
+                    app.refresh();
+                }
+            }
+        }
+    }
+}
+
 fn is_focus_toggle(key: &crossterm::event::KeyEvent) -> bool {
-    // Ctrl+Space
     key.code == KeyCode::Char(' ') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
@@ -135,10 +181,42 @@ fn handle_key(
     key: crossterm::event::KeyEvent,
     terminal: &mut Term,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Global: Ctrl+C always quits
+    // Help and Settings: Esc or q to close
+    match &app.mode {
+        AppMode::Help => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                    app.mode = AppMode::Normal;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        AppMode::Settings { .. } => {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('s') => {
+                    app.mode = AppMode::Normal;
+                }
+                KeyCode::Char('R') => {
+                    app.mode = AppMode::Confirm {
+                        message: "Reset config? (repos stay on disk)".to_string(),
+                        action: ConfirmAction::ResetConfig,
+                    };
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        AppMode::BranchPicker { .. } => {
+            handle_branch_picker(app, key, terminal)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // Global: Ctrl+C
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         if app.focus == Focus::Terminal {
-            // Forward Ctrl+C to terminal
             if let Some(t) = app.active_terminal() {
                 t.write_input(&[0x03]);
             }
@@ -165,7 +243,6 @@ fn handle_key(
 
     match app.focus {
         Focus::Terminal => {
-            // All keys go to PTY
             if let Some(t) = app.active_terminal() {
                 let app_cursor = t.application_cursor();
                 let bytes = key_to_bytes(&key, app_cursor);
@@ -192,12 +269,15 @@ fn handle_key(
                             }
                         }
                         KeyCode::Char('n') => app.start_new_comb(),
+                        KeyCode::Char('c') => app.start_copy_comb(),
                         KeyCode::Char('a') => app.start_add_hive(),
                         KeyCode::Char('d') => app.start_delete(),
                         KeyCode::Char('r') => {
                             app.refresh();
                             app.status_message = Some("Refreshed".to_string());
                         }
+                        KeyCode::Char('s') => app.open_settings(),
+                        KeyCode::Char('?') => app.open_help(),
                         _ => {}
                     }
                 }
@@ -228,9 +308,112 @@ fn handle_key(
                         app.mode = AppMode::Normal;
                     }
                 },
+                AppMode::Help | AppMode::Settings { .. } | AppMode::BranchPicker { .. } => {}
             }
         }
     }
+    Ok(())
+}
+
+fn handle_branch_picker(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    terminal: &mut Term,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Up => {
+            if let AppMode::BranchPicker { selected, filter, branches, .. } = &mut app.mode {
+                let filtered_count = branches.iter().filter(|b| b.contains(filter.as_str())).count();
+                if *selected > 0 {
+                    *selected -= 1;
+                } else if filtered_count > 0 {
+                    *selected = filtered_count - 1;
+                }
+            }
+        }
+        KeyCode::Down => {
+            if let AppMode::BranchPicker { selected, filter, branches, .. } = &mut app.mode {
+                let filtered_count = branches.iter().filter(|b| b.contains(filter.as_str())).count();
+                if *selected + 1 < filtered_count {
+                    *selected += 1;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            // Extract data from mode before replacing it
+            let mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            if let AppMode::BranchPicker {
+                hive_dir_name,
+                comb_name,
+                branches,
+                default_branch,
+                filter,
+                selected,
+            } = mode
+            {
+                let filtered: Vec<&String> = branches.iter().filter(|b| b.contains(&filter)).collect();
+                let branch = if filtered.is_empty() {
+                    if filter.is_empty() { default_branch } else { filter }
+                } else {
+                    filtered.get(selected).map(|s| s.to_string()).unwrap_or(default_branch)
+                };
+
+                start_async_clone(app, terminal, hive_dir_name, comb_name, branch)?;
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::BranchPicker { filter, selected, .. } = &mut app.mode {
+                filter.push(c);
+                *selected = 0;
+            }
+        }
+        KeyCode::Backspace => {
+            if let AppMode::BranchPicker { filter, selected, .. } = &mut app.mode {
+                filter.pop();
+                *selected = 0;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn start_async_clone(
+    app: &mut App,
+    terminal: &mut Term,
+    hive_dir_name: String,
+    comb_name: String,
+    branch: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = load_hive_state(&app.beehive_dir, &hive_dir_name)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    app.status_message = Some(format!("Cloning '{}'...", comb_name));
+    terminal.draw(|frame| {
+        ui::render(frame, app);
+    })?;
+
+    let slot: Arc<Mutex<Option<CloneResult>>> = Arc::new(Mutex::new(None));
+    let slot_clone = Arc::clone(&slot);
+    let beehive_dir = app.beehive_dir.clone();
+    let hive_dir_clone = hive_dir_name.clone();
+    let comb_name_clone = comb_name.clone();
+    let branch_clone = branch.clone();
+
+    std::thread::spawn(move || {
+        let result = create_comb_sync(&beehive_dir, &hive_dir_clone, &comb_name_clone, &branch_clone, &state);
+        let mut guard = slot_clone.lock().unwrap();
+        *guard = Some(CloneResult {
+            comb: result,
+            comb_name: comb_name_clone,
+            hive_dir_name: hive_dir_clone,
+        });
+    });
+
+    app.pending_clone = Some(slot);
     Ok(())
 }
 
@@ -252,55 +435,39 @@ fn handle_input_submit(
                     app.status_message = Some(e);
                     return Ok(());
                 }
-                let default_branch = state
-                    .info
-                    .default_branch
-                    .clone()
-                    .unwrap_or_else(|| "main".to_string());
-                app.mode = AppMode::Input {
-                    prompt: format!("Branch [{}]", default_branch),
-                    value: String::new(),
-                    action: InputAction::NewCombBranch {
-                        hive_dir_name,
-                        comb_name: value,
-                    },
-                };
-            }
-            InputAction::NewCombBranch {
-                hive_dir_name,
-                comb_name,
-            } => {
-                let state = load_hive_state(&app.beehive_dir, &hive_dir_name)
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-                let branch = if value.is_empty() {
-                    state
-                        .info
-                        .default_branch
-                        .clone()
-                        .unwrap_or_else(|| "main".to_string())
-                } else {
-                    value
-                };
 
-                app.status_message = Some(format!("Cloning {}...", comb_name));
+                // Fetch branches and show picker
+                app.status_message = Some("Loading branches...".to_string());
                 terminal.draw(|frame| {
                     ui::render(frame, app);
                 })?;
 
-                match create_comb(&app.beehive_dir, &hive_dir_name, &comb_name, &branch, &state) {
-                    Ok(comb) => {
-                        app.status_message = Some(format!("Created '{}'", comb_name));
-                        let id = comb.id.clone();
-                        let path = comb.path.clone();
-                        app.active_comb_id = Some(id.clone());
-                        app.refresh();
-                        app.open_terminal(&id, &path);
+                match list_branches(&app.beehive_dir, &hive_dir_name) {
+                    Ok((branches, default_branch)) => {
+                        app.status_message = None;
+                        app.mode = AppMode::BranchPicker {
+                            hive_dir_name,
+                            comb_name: value,
+                            branches,
+                            default_branch,
+                            filter: String::new(),
+                            selected: 0,
+                        };
                     }
-                    Err(e) => {
-                        app.status_message = Some(format!("Failed: {}", e));
+                    Err(_) => {
+                        // Fallback: just use text input for branch
+                        let default_branch = state
+                            .info
+                            .default_branch
+                            .unwrap_or_else(|| "main".to_string());
+                        app.status_message = Some("Could not fetch branches, type manually".to_string());
+                        app.mode = AppMode::Input {
+                            prompt: format!("Branch [{}]", default_branch),
+                            value: String::new(),
+                            action: InputAction::NewCombName { hive_dir_name },
+                        };
                     }
                 }
-                app.refresh();
             }
             InputAction::AddHiveUrl => {
                 app.status_message = Some("Adding hive...".to_string());
@@ -311,6 +478,38 @@ fn handle_input_submit(
                 match add_hive(&app.beehive_dir, &value) {
                     Ok(name) => app.status_message = Some(format!("Added '{}'", name)),
                     Err(e) => app.status_message = Some(format!("Failed: {}", e)),
+                }
+                app.refresh();
+            }
+            InputAction::CopyCombName {
+                hive_dir_name,
+                source_comb_path,
+                ..
+            } => {
+                let state = load_hive_state(&app.beehive_dir, &hive_dir_name)
+                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                if let Err(e) = validate_comb_name(&value, &state.combs) {
+                    app.status_message = Some(e);
+                    return Ok(());
+                }
+
+                app.status_message = Some(format!("Copying to '{}'...", value));
+                terminal.draw(|frame| {
+                    ui::render(frame, app);
+                })?;
+
+                match copy_comb(&app.beehive_dir, &hive_dir_name, &source_comb_path, &value) {
+                    Ok(comb) => {
+                        app.status_message = Some(format!("Copied to '{}'", value));
+                        let id = comb.id.clone();
+                        let path = comb.path.clone();
+                        app.active_comb_id = Some(id.clone());
+                        app.refresh();
+                        app.open_terminal(&id, &path);
+                    }
+                    Err(e) => {
+                        app.status_message = Some(format!("Copy failed: {}", e));
+                    }
                 }
                 app.refresh();
             }
@@ -354,6 +553,16 @@ fn handle_confirm(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 app.remove_hive_terminals(&dir_name);
                 app.refresh();
             }
+            ConfirmAction::ResetConfig => {
+                match reset_config() {
+                    Ok(()) => {
+                        app.status_message = Some("Config reset. Restart to reconfigure.".to_string());
+                    }
+                    Err(e) => {
+                        app.status_message = Some(format!("Reset failed: {}", e));
+                    }
+                }
+            }
             ConfirmAction::Quit => {
                 app.should_quit = true;
             }
@@ -362,9 +571,9 @@ fn handle_confirm(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// --- Operations ---
+// --- Sync clone operation (runs in background thread) ---
 
-fn create_comb(
+fn create_comb_sync(
     beehive_dir: &str,
     hive_dir_name: &str,
     comb_name: &str,

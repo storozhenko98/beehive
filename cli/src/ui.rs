@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget, Wrap},
     Frame,
 };
 
@@ -63,6 +63,16 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
             prompt, value, ..
         } => render_input(frame, prompt, value),
         AppMode::Confirm { message, .. } => render_confirm(frame, message),
+        AppMode::Help => render_help(frame),
+        AppMode::Settings { preflight } => render_settings(frame, app, preflight),
+        AppMode::BranchPicker {
+            branches,
+            default_branch,
+            filter,
+            selected,
+            comb_name,
+            ..
+        } => render_branch_picker(frame, branches, default_branch, filter, *selected, comb_name),
         AppMode::Normal => {}
     }
 
@@ -77,7 +87,10 @@ fn render_header(frame: &mut Frame, area: Rect) {
                 .fg(MAUVE)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" tui", Style::default().fg(OVERLAY0)),
+        Span::styled(
+            format!(" v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(OVERLAY0),
+        ),
     ]))
     .style(Style::default().bg(MANTLE));
     frame.render_widget(header, area);
@@ -262,46 +275,279 @@ fn render_terminal_pane(frame: &mut Frame, app: &App, area: Rect) -> Rect {
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let content = if let Some(msg) = &app.status_message {
         Line::from(Span::styled(format!(" {}", msg), Style::default().fg(YELLOW)))
-    } else if app.focus == Focus::Terminal {
-        Line::from(vec![
-            Span::styled(" Ctrl+Space", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-            Span::styled(" sidebar", Style::default().fg(OVERLAY0)),
-        ])
     } else {
-        let mut spans = vec![
-            Span::styled(" enter", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-            Span::styled(" open ", Style::default().fg(OVERLAY0)),
-            Span::styled("│", Style::default().fg(SURFACE1)),
-        ];
-        if !app.items.is_empty() {
-            spans.extend([
-                Span::styled(" n", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                Span::styled(" new ", Style::default().fg(OVERLAY0)),
-                Span::styled("│", Style::default().fg(SURFACE1)),
-            ]);
+        match &app.mode {
+            AppMode::Help => {
+                Line::from(vec![
+                    Span::styled(" Esc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" close", Style::default().fg(OVERLAY0)),
+                ])
+            }
+            AppMode::Settings { .. } => {
+                Line::from(vec![
+                    Span::styled(" Esc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" close ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" R", Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+                    Span::styled(" reset config", Style::default().fg(OVERLAY0)),
+                ])
+            }
+            AppMode::BranchPicker { .. } => {
+                Line::from(vec![
+                    Span::styled(" ↑↓", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" navigate ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" enter", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" select ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" type", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" to filter ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" Esc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" cancel", Style::default().fg(OVERLAY0)),
+                ])
+            }
+            _ if app.focus == Focus::Terminal => {
+                Line::from(vec![
+                    Span::styled(" Ctrl+Space", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" sidebar", Style::default().fg(OVERLAY0)),
+                ])
+            }
+            _ => {
+                let mut spans = vec![
+                    Span::styled(" enter", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" open ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                ];
+                if !app.items.is_empty() {
+                    spans.extend([
+                        Span::styled(" n", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                        Span::styled(" new ", Style::default().fg(OVERLAY0)),
+                        Span::styled("│", Style::default().fg(SURFACE1)),
+                        Span::styled(" c", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                        Span::styled(" copy ", Style::default().fg(OVERLAY0)),
+                        Span::styled("│", Style::default().fg(SURFACE1)),
+                    ]);
+                }
+                spans.extend([
+                    Span::styled(" a", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" add ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" d", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" del ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" s", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" settings ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" ?", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" help ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" q", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" quit", Style::default().fg(OVERLAY0)),
+                ]);
+                if app.active_terminal().is_some() {
+                    spans.extend([
+                        Span::styled(" │", Style::default().fg(SURFACE1)),
+                        Span::styled(" C-Spc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                        Span::styled(" terminal", Style::default().fg(OVERLAY0)),
+                    ]);
+                }
+                Line::from(spans)
+            }
         }
-        spans.extend([
-            Span::styled(" a", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-            Span::styled(" add ", Style::default().fg(OVERLAY0)),
-            Span::styled("│", Style::default().fg(SURFACE1)),
-            Span::styled(" d", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-            Span::styled(" del ", Style::default().fg(OVERLAY0)),
-            Span::styled("│", Style::default().fg(SURFACE1)),
-            Span::styled(" q", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-            Span::styled(" quit ", Style::default().fg(OVERLAY0)),
-        ]);
-        if app.active_terminal().is_some() {
-            spans.extend([
-                Span::styled("│", Style::default().fg(SURFACE1)),
-                Span::styled(" C-Spc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                Span::styled(" terminal", Style::default().fg(OVERLAY0)),
-            ]);
-        }
-        Line::from(spans)
     };
 
     let footer = Paragraph::new(content).style(Style::default().bg(MANTLE));
     frame.render_widget(footer, area);
+}
+
+fn render_help(frame: &mut Frame) {
+    let area = overlay_rect(60, 22, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Help ")
+        .title_style(Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(MAUVE))
+        .style(Style::default().bg(MANTLE));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let key_style = Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(TEXT);
+    let header_style = Style::default().fg(PEACH).add_modifier(Modifier::BOLD);
+    let dim_style = Style::default().fg(OVERLAY0);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("  Concepts", header_style)),
+        Line::from(Span::styled("  Hive = a GitHub repo you work on", dim_style)),
+        Line::from(Span::styled("  Comb = an isolated git clone / workspace", dim_style)),
+        Line::from(""),
+        Line::from(Span::styled("  Sidebar", header_style)),
+        Line::from(vec![Span::styled("  enter    ", key_style), Span::styled("Open comb / toggle hive", desc_style)]),
+        Line::from(vec![Span::styled("  j/k      ", key_style), Span::styled("Move up/down", desc_style)]),
+        Line::from(vec![Span::styled("  n        ", key_style), Span::styled("New comb (clone + branch)", desc_style)]),
+        Line::from(vec![Span::styled("  c        ", key_style), Span::styled("Copy comb (duplicate workspace)", desc_style)]),
+        Line::from(vec![Span::styled("  a        ", key_style), Span::styled("Add hive (GitHub repo)", desc_style)]),
+        Line::from(vec![Span::styled("  d        ", key_style), Span::styled("Delete selected comb or hive", desc_style)]),
+        Line::from(vec![Span::styled("  r        ", key_style), Span::styled("Refresh sidebar", desc_style)]),
+        Line::from(vec![Span::styled("  s        ", key_style), Span::styled("Settings", desc_style)]),
+        Line::from(vec![Span::styled("  q        ", key_style), Span::styled("Quit", desc_style)]),
+        Line::from(""),
+        Line::from(Span::styled("  Global", header_style)),
+        Line::from(vec![Span::styled("  C-Space  ", key_style), Span::styled("Toggle sidebar / terminal focus", desc_style)]),
+        Line::from(vec![Span::styled("  Ctrl+C   ", key_style), Span::styled("Send interrupt (terminal) / quit (sidebar)", desc_style)]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .style(Style::default().bg(MANTLE))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
+fn render_branch_picker(
+    frame: &mut Frame,
+    branches: &[String],
+    default_branch: &str,
+    filter: &str,
+    selected: usize,
+    comb_name: &str,
+) {
+    let max_h = (frame.area().height - 4).min(20);
+    let area = overlay_rect(50, max_h, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Branch for '{}' ", comb_name);
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BLUE))
+        .style(Style::default().bg(MANTLE));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 3 {
+        return;
+    }
+
+    // Filter input line
+    let filter_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    let filter_line = Paragraph::new(Line::from(vec![
+        Span::styled(" / ", Style::default().fg(OVERLAY0)),
+        Span::styled(filter, Style::default().fg(TEXT)),
+        Span::styled("_", Style::default().fg(BLUE)),
+    ]))
+    .style(Style::default().bg(SURFACE0));
+    frame.render_widget(filter_line, filter_area);
+
+    // Branch list
+    let list_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
+
+    let filtered: Vec<&String> = branches
+        .iter()
+        .filter(|b| filter.is_empty() || b.contains(filter))
+        .collect();
+
+    let count_line = Line::from(Span::styled(
+        format!(" {} of {} branches", filtered.len(), branches.len()),
+        Style::default().fg(OVERLAY0),
+    ));
+    let count_area = Rect::new(list_area.x, list_area.y, list_area.width, 1);
+    frame.render_widget(
+        Paragraph::new(count_line).style(Style::default().bg(MANTLE)),
+        count_area,
+    );
+
+    let items_area = Rect::new(list_area.x, list_area.y + 1, list_area.width, list_area.height.saturating_sub(1));
+
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .map(|name| {
+            let is_default = name.as_str() == default_branch;
+            let mut spans = vec![Span::styled(
+                format!("  {}", name),
+                Style::default().fg(TEXT),
+            )];
+            if is_default {
+                spans.push(Span::styled(
+                    " (default)",
+                    Style::default().fg(GREEN),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+
+    let list = List::new(items)
+        .style(Style::default().bg(MANTLE))
+        .highlight_style(
+            Style::default()
+                .bg(SURFACE0)
+                .fg(BLUE)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    frame.render_stateful_widget(list, items_area, &mut state);
+}
+
+fn render_settings(frame: &mut Frame, app: &App, pf: &crate::config::PreflightResult) {
+    let area = overlay_rect(55, 18, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!(" Settings — v{} ", env!("CARGO_PKG_VERSION")))
+        .title_style(Style::default().fg(MAUVE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(MAUVE))
+        .style(Style::default().bg(MANTLE));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let label_style = Style::default().fg(SUBTEXT0);
+    let value_style = Style::default().fg(TEXT);
+    let header_style = Style::default().fg(PEACH).add_modifier(Modifier::BOLD);
+
+    let ok = Span::styled("OK", Style::default().fg(GREEN).add_modifier(Modifier::BOLD));
+    let missing = Span::styled("missing", Style::default().fg(RED).add_modifier(Modifier::BOLD));
+    let not_auth = Span::styled("not authenticated", Style::default().fg(YELLOW).add_modifier(Modifier::BOLD));
+
+    let git_status = if pf.git.is_some() { ok.clone() } else { missing.clone() };
+    let gh_status = if pf.gh.is_some() { ok.clone() } else { missing.clone() };
+    let auth_status = if pf.gh_auth { ok } else if pf.gh.is_some() { not_auth } else { missing };
+
+    let config_path = crate::config::app_config_path().to_string_lossy().to_string();
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("  Paths", header_style)),
+        Line::from(vec![Span::styled("  Beehive dir  ", label_style), Span::styled(&app.beehive_dir, value_style)]),
+        Line::from(vec![Span::styled("  Config file  ", label_style), Span::styled(config_path, value_style)]),
+        Line::from(""),
+        Line::from(Span::styled("  Dependencies", header_style)),
+        Line::from(vec![Span::styled("  git          ", label_style), git_status]),
+        Line::from(vec![Span::styled("  gh CLI       ", label_style), gh_status]),
+        Line::from(vec![Span::styled("  gh auth      ", label_style), auth_status]),
+        Line::from(""),
+        Line::from(Span::styled("  Sessions", header_style)),
+        Line::from(vec![
+            Span::styled("  Active terminals  ", label_style),
+            Span::styled(format!("{}", app.terminals.len()), value_style),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .style(Style::default().bg(MANTLE))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
 }
 
 // --- vt100 -> ratatui rendering ---
@@ -451,4 +697,11 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         .split(vert[1]);
 
     horiz[1]
+}
+
+/// Centered overlay with min/max clamping.
+fn overlay_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width.saturating_sub(4));
+    let h = height.min(area.height.saturating_sub(2));
+    centered_rect(w, h, area)
 }

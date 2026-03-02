@@ -73,16 +73,12 @@ pub struct HiveState {
 
 // --- Preflight ---
 
-#[allow(dead_code)]
 pub struct PreflightResult {
     pub git: Option<String>,
     pub gh: Option<String>,
     pub gh_auth: bool,
-    pub tmux: Option<String>,
-    pub zellij: Option<String>,
 }
 
-#[allow(dead_code)]
 pub fn preflight() -> PreflightResult {
     let git = run_cmd("git", &["--version"])
         .ok()
@@ -94,21 +90,59 @@ pub fn preflight() -> PreflightResult {
 
     let gh_auth = gh.is_some() && run_cmd("gh", &["auth", "status"]).is_ok();
 
-    let tmux = run_cmd("tmux", &["-V"])
-        .ok()
-        .map(|v| v.trim().to_string());
+    PreflightResult { git, gh, gh_auth }
+}
 
-    let zellij = run_cmd("zellij", &["--version"])
-        .ok()
-        .map(|v| v.trim().to_string());
-
-    PreflightResult {
-        git,
-        gh,
-        gh_auth,
-        tmux,
-        zellij,
+pub fn reset_config() -> Result<(), String> {
+    let path = app_config_path();
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to remove config: {}", e))?;
     }
+    Ok(())
+}
+
+pub fn copy_comb(
+    beehive_dir: &str,
+    hive_dir_name: &str,
+    source_path: &str,
+    new_name: &str,
+) -> Result<Comb, String> {
+    let hive_dir = Path::new(beehive_dir).join(hive_dir_name);
+    let dest_dir = hive_dir.join(new_name);
+
+    if dest_dir.exists() {
+        return Err(format!("Directory '{}' already exists", new_name));
+    }
+
+    // Recursive copy
+    let status = Command::new("cp")
+        .args(["-r", source_path, &dest_dir.to_string_lossy()])
+        .status()
+        .map_err(|e| format!("Copy failed: {}", e))?;
+
+    if !status.success() {
+        let _ = fs::remove_dir_all(&dest_dir);
+        return Err("Copy failed".to_string());
+    }
+
+    // Read the branch from the copied directory
+    let branch = get_git_branch(&dest_dir.to_string_lossy())
+        .unwrap_or_else(|| "main".to_string());
+
+    let comb = Comb {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: new_name.to_string(),
+        branch,
+        path: dest_dir.to_string_lossy().to_string(),
+        created_at: chrono_now(),
+        panes: vec![],
+        cloning: false,
+    };
+
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
+    state.combs.push(comb.clone());
+    save_hive_state(beehive_dir, hive_dir_name, &state)?;
+    Ok(comb)
 }
 
 // --- Path/command helpers ---
@@ -261,7 +295,7 @@ pub fn get_combs(beehive_dir: &str, dir_name: &str) -> Result<Vec<Comb>, String>
     Ok(state.combs)
 }
 
-fn get_git_branch(path: &str) -> Option<String> {
+pub fn get_git_branch(path: &str) -> Option<String> {
     let p = Path::new(path);
     if !p.exists() {
         return None;
@@ -280,6 +314,29 @@ fn get_git_branch(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+pub fn list_branches(beehive_dir: &str, dir_name: &str) -> Result<(Vec<String>, String), String> {
+    let state = load_hive_state(beehive_dir, dir_name)?;
+    let repo_spec = format!("{}/{}", state.info.owner, state.info.repo_name);
+    let default_branch = state
+        .info
+        .default_branch
+        .unwrap_or_else(|| "main".to_string());
+
+    let output = run_cmd(
+        "gh",
+        &[
+            "api",
+            &format!("repos/{}/branches?per_page=100", repo_spec),
+            "--paginate",
+            "--jq",
+            ".[].name",
+        ],
+    )?;
+
+    let branches: Vec<String> = output.lines().map(|l| l.to_string()).collect();
+    Ok((branches, default_branch))
 }
 
 pub fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String> {
