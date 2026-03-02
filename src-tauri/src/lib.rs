@@ -18,6 +18,7 @@ pub fn run() {
             // PTY
             pty::create_pty,
             pty::write_to_pty,
+            pty::write_to_pty_binary,
             pty::resize_pty,
             pty::close_pty,
             // App config

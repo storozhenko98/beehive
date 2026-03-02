@@ -32,6 +32,8 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
   const lastSizeRef = useRef<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
+  // Ref to the current PTY session ID so attachCustomKeyEventHandler can write to it
+  const sessionIdRef = useRef<string | null>(null);
   // Drag-drop visual feedback (ref avoids stale closures in event callbacks)
   const [isDragOver, setIsDragOver] = useState(false);
   const isDragOverRef = useRef(false);
@@ -88,6 +90,57 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    sessionIdRef.current = sessionId;
+
+    // --- Keyboard passthrough for TUI apps (Zellij, tmux, etc.) ---
+    // xterm.js 5.5 doesn't support the kitty keyboard protocol, so multi-modifier
+    // combos like Ctrl+Shift+T generate the same byte as Ctrl+T. We manually
+    // generate CSI u sequences for these combos.
+    // CSI u format: ESC [ <codepoint> ; <modifier> u
+    // Modifier encoding: value = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0)
+    terminal.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
+      if (ev.type !== "keydown") return true;
+
+      // Let Cmd+C/V/A/Q pass to native macOS handling
+      if (ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+        if (ev.key === "c" || ev.key === "v" || ev.key === "a" || ev.key === "q") {
+          return false;
+        }
+      }
+
+      // Check for multi-modifier combos that need CSI u encoding
+      const hasCtrl = ev.ctrlKey;
+      const hasShift = ev.shiftKey;
+      const hasAlt = ev.altKey;
+      const hasMeta = ev.metaKey;
+      const needsCsiU = !hasMeta && ((hasCtrl && hasShift) || (hasCtrl && hasAlt) || (hasAlt && hasShift));
+
+      if (needsCsiU && ev.key.length === 1) {
+        const codepoint = ev.key.toLowerCase().charCodeAt(0);
+        const mod = 1 + (hasShift ? 1 : 0) + (hasAlt ? 2 : 0) + (hasCtrl ? 4 : 0);
+        const seq = `\x1b[${codepoint};${mod}u`;
+        if (sessionIdRef.current) {
+          invoke("write_to_pty", { id: sessionIdRef.current, data: seq }).catch(() => {});
+        }
+        ev.preventDefault();
+        return false; // Don't let xterm.js also generate a legacy sequence
+      }
+
+      // Everything else: let xterm.js handle normally
+      return true;
+    });
+
+    // Global keydown listener in capture phase to prevent WebView from
+    // consuming modifier combos (Ctrl+Shift+T, etc.) before xterm.js sees them
+    const globalKeyHandler = (ev: KeyboardEvent) => {
+      if (document.activeElement !== terminal.textarea) return;
+      if ((ev.ctrlKey && ev.shiftKey) || (ev.ctrlKey && ev.altKey)) {
+        if (!ev.metaKey) {
+          ev.preventDefault();
+        }
+      }
+    };
+    window.addEventListener("keydown", globalKeyHandler, { capture: true });
 
     // Copy xterm.js selection to system clipboard (mouse selection)
     const onSelDisposable = terminal.onSelectionChange(() => {
@@ -153,6 +206,15 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
       });
     });
 
+    // Handle binary data (non-UTF-8 escape sequences, e.g. legacy mouse reports)
+    const onBinaryDisposable = terminal.onBinary((data) => {
+      const bytes: number[] = [];
+      for (let i = 0; i < data.length; i++) {
+        bytes.push(data.charCodeAt(i) & 0xff);
+      }
+      invoke("write_to_pty_binary", { id: sessionId, data: bytes }).catch(() => {});
+    });
+
     // Handle resize — only notify PTY if dimensions actually changed
     // Uses lastSizeRef (shared with visibility effect) to avoid spurious SIGWINCH
     lastSizeRef.current = { rows: terminal.rows, cols: terminal.cols };
@@ -209,8 +271,10 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
     return () => {
       resizeObserver.disconnect();
       onDataDisposable.dispose();
+      onBinaryDisposable.dispose();
       onSelDisposable.dispose();
       terminal.textarea?.removeEventListener("focus", focusHandler);
+      window.removeEventListener("keydown", globalKeyHandler, { capture: true });
       unlistenOutput.then((fn) => fn());
       unlistenExit.then((fn) => fn());
       unlistenDragOver.then((fn) => fn());
@@ -220,6 +284,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      sessionIdRef.current = null;
     };
   }, [id, cwd, cmd]);
 

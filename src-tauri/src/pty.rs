@@ -114,7 +114,7 @@ pub async fn create_pty(
     let exit_event = format!("pty-exit-{}", id);
 
     tokio::task::spawn_blocking(move || {
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 16384];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
@@ -142,14 +142,17 @@ pub async fn write_to_pty(
     data: String,
     state: State<'_, PtyState>,
 ) -> Result<(), String> {
-    let manager = state.lock().await;
-    let session = manager
-        .sessions
-        .get(&id)
-        .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+    // Clone the Arc — hold global lock only for HashMap lookup
+    let writer = {
+        let manager = state.lock().await;
+        let session = manager
+            .sessions
+            .get(&id)
+            .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+        session.writer.clone() // Arc::clone is cheap
+    }; // global manager lock dropped here — other sessions can proceed concurrently
 
-    let mut writer = session
-        .writer
+    let mut writer = writer
         .lock()
         .map_err(|e| format!("Failed to lock writer: {}", e))?;
 
@@ -157,9 +160,34 @@ pub async fn write_to_pty(
         .write_all(data.as_bytes())
         .map_err(|e| format!("Failed to write: {}", e))?;
 
+    // No flush needed — PTY master fds are unbuffered at the OS level.
+    // Data is immediately available to the slave process after write().
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn write_to_pty_binary(
+    id: String,
+    data: Vec<u8>,
+    state: State<'_, PtyState>,
+) -> Result<(), String> {
+    let writer = {
+        let manager = state.lock().await;
+        let session = manager
+            .sessions
+            .get(&id)
+            .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+        session.writer.clone()
+    };
+
+    let mut writer = writer
+        .lock()
+        .map_err(|e| format!("Failed to lock writer: {}", e))?;
+
     writer
-        .flush()
-        .map_err(|e| format!("Failed to flush: {}", e))?;
+        .write_all(&data)
+        .map_err(|e| format!("Failed to write: {}", e))?;
 
     Ok(())
 }
@@ -171,14 +199,17 @@ pub async fn resize_pty(
     cols: u16,
     state: State<'_, PtyState>,
 ) -> Result<(), String> {
-    let manager = state.lock().await;
-    let session = manager
-        .sessions
-        .get(&id)
-        .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+    // Clone the Arc — hold global lock only for HashMap lookup
+    let master = {
+        let manager = state.lock().await;
+        let session = manager
+            .sessions
+            .get(&id)
+            .ok_or_else(|| format!("PTY session '{}' not found", id))?;
+        session.master.clone()
+    }; // global manager lock dropped here
 
-    let master = session
-        .master
+    let master = master
         .lock()
         .map_err(|e| format!("Failed to lock master: {}", e))?;
 

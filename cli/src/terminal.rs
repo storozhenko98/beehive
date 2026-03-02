@@ -97,7 +97,8 @@ impl EmbeddedTerminal {
     pub fn write_input(&self, data: &[u8]) {
         if let Ok(mut w) = self.writer.lock() {
             let _ = w.write_all(data);
-            let _ = w.flush();
+            // No flush needed — PTY master fds are unbuffered at the OS level.
+            // Data is immediately available to the slave process after write().
         }
     }
 
@@ -152,14 +153,80 @@ impl EmbeddedTerminal {
     }
 }
 
+/// Compute the xterm modifier parameter from crossterm KeyModifiers.
+/// Encoding: value = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0)
+/// Returns 0 if no modifiers are set (meaning: no modifier parameter needed).
+fn xterm_modifier(mods: crossterm::event::KeyModifiers) -> u8 {
+    use crossterm::event::KeyModifiers;
+    let mut m: u8 = 0;
+    if mods.contains(KeyModifiers::SHIFT) {
+        m += 1;
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        m += 2;
+    }
+    if mods.contains(KeyModifiers::CONTROL) {
+        m += 4;
+    }
+    if m > 0 {
+        m + 1
+    } else {
+        0
+    }
+}
+
+/// Check if the modifier combination requires CSI u encoding because
+/// legacy terminal encoding cannot represent it (e.g. Ctrl+Shift+letter).
+fn needs_csi_u(mods: crossterm::event::KeyModifiers) -> bool {
+    use crossterm::event::KeyModifiers;
+    let has_ctrl = mods.contains(KeyModifiers::CONTROL);
+    let has_shift = mods.contains(KeyModifiers::SHIFT);
+    let has_alt = mods.contains(KeyModifiers::ALT);
+    // Any two-or-more modifier combo needs CSI u for character keys
+    (has_ctrl && has_shift) || (has_ctrl && has_alt) || (has_alt && has_shift)
+}
+
+/// Generate CSI u sequence: ESC [ codepoint ; modifier u
+fn csi_u(codepoint: u32, modifier: u8) -> Vec<u8> {
+    format!("\x1b[{};{}u", codepoint, modifier).into_bytes()
+}
+
+/// Generate a modified special key sequence.
+/// For keys encoded as ESC [ <letter> (arrow keys, Home, End):
+///   ESC [ 1 ; <modifier> <letter>
+/// For keys encoded as ESC [ <code> ~ (PageUp, Delete, etc.):
+///   ESC [ <code> ; <modifier> ~
+/// For keys encoded as ESC O <letter> (F1-F4):
+///   ESC [ 1 ; <modifier> <letter>  (promoted to CSI format with modifiers)
+fn modified_special_key_csi(suffix: u8, modifier: u8) -> Vec<u8> {
+    // CSI 1 ; modifier <suffix>
+    format!("\x1b[1;{}{}", modifier, suffix as char).into_bytes()
+}
+
+fn modified_special_key_tilde(code: u16, modifier: u8) -> Vec<u8> {
+    // CSI code ; modifier ~
+    format!("\x1b[{};{}~", code, modifier).into_bytes()
+}
+
 /// Translate a crossterm key event into the byte sequence to send to a PTY.
+/// Uses CSI u encoding for multi-modifier character combos (Ctrl+Shift, Ctrl+Alt, etc.)
+/// that legacy terminal encoding cannot represent. Single-modifier keys use legacy encoding
+/// for maximum backward compatibility.
 pub fn key_to_bytes(key: &crossterm::event::KeyEvent, app_cursor: bool) -> Vec<u8> {
     use crossterm::event::{KeyCode, KeyModifiers};
 
     let mods = key.modifiers;
+    let xmod = xterm_modifier(mods);
 
     match key.code {
         KeyCode::Char(c) => {
+            // Multi-modifier combos (Ctrl+Shift, Ctrl+Alt, etc.) need CSI u
+            if needs_csi_u(mods) {
+                let codepoint = c.to_ascii_lowercase() as u32;
+                return csi_u(codepoint, xmod);
+            }
+
+            // Single-modifier legacy encoding
             if mods.contains(KeyModifiers::CONTROL) {
                 if c.is_ascii_alphabetic() {
                     vec![(c.to_ascii_lowercase() as u8) & 0x1f]
@@ -172,9 +239,9 @@ pub fn key_to_bytes(key: &crossterm::event::KeyEvent, app_cursor: bool) -> Vec<u
                 } else if c == ']' {
                     vec![0x1d]
                 } else {
-                    let mut buf = [0u8; 4];
-                    c.encode_utf8(&mut buf);
-                    buf[..c.len_utf8()].to_vec()
+                    // For other Ctrl+<char>, use CSI u since legacy has no mapping
+                    let codepoint = c as u32;
+                    csi_u(codepoint, xmod)
                 }
             } else if mods.contains(KeyModifiers::ALT) {
                 let mut bytes = vec![0x1b];
@@ -188,36 +255,193 @@ pub fn key_to_bytes(key: &crossterm::event::KeyEvent, app_cursor: bool) -> Vec<u
             }
         }
         KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Backspace => {
+            if xmod > 0 {
+                // Backspace = codepoint 127
+                csi_u(127, xmod)
+            } else {
+                vec![0x7f]
+            }
+        }
+        KeyCode::Tab => {
+            if mods.contains(KeyModifiers::SHIFT) {
+                vec![0x1b, b'[', b'Z'] // BackTab
+            } else {
+                vec![b'\t']
+            }
+        }
         KeyCode::BackTab => vec![0x1b, b'[', b'Z'],
         KeyCode::Esc => vec![0x1b],
-        KeyCode::Up if app_cursor => vec![0x1b, b'O', b'A'],
-        KeyCode::Down if app_cursor => vec![0x1b, b'O', b'B'],
-        KeyCode::Right if app_cursor => vec![0x1b, b'O', b'C'],
-        KeyCode::Left if app_cursor => vec![0x1b, b'O', b'D'],
-        KeyCode::Up => vec![0x1b, b'[', b'A'],
-        KeyCode::Down => vec![0x1b, b'[', b'B'],
-        KeyCode::Right => vec![0x1b, b'[', b'C'],
-        KeyCode::Left => vec![0x1b, b'[', b'D'],
-        KeyCode::Home => vec![0x1b, b'[', b'H'],
-        KeyCode::End => vec![0x1b, b'[', b'F'],
-        KeyCode::PageUp => vec![0x1b, b'[', b'5', b'~'],
-        KeyCode::PageDown => vec![0x1b, b'[', b'6', b'~'],
-        KeyCode::Insert => vec![0x1b, b'[', b'2', b'~'],
-        KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'],
-        KeyCode::F(1) => vec![0x1b, b'O', b'P'],
-        KeyCode::F(2) => vec![0x1b, b'O', b'Q'],
-        KeyCode::F(3) => vec![0x1b, b'O', b'R'],
-        KeyCode::F(4) => vec![0x1b, b'O', b'S'],
-        KeyCode::F(5) => vec![0x1b, b'[', b'1', b'5', b'~'],
-        KeyCode::F(6) => vec![0x1b, b'[', b'1', b'7', b'~'],
-        KeyCode::F(7) => vec![0x1b, b'[', b'1', b'8', b'~'],
-        KeyCode::F(8) => vec![0x1b, b'[', b'1', b'9', b'~'],
-        KeyCode::F(9) => vec![0x1b, b'[', b'2', b'0', b'~'],
-        KeyCode::F(10) => vec![0x1b, b'[', b'2', b'1', b'~'],
-        KeyCode::F(11) => vec![0x1b, b'[', b'2', b'3', b'~'],
-        KeyCode::F(12) => vec![0x1b, b'[', b'2', b'4', b'~'],
+
+        // Arrow keys — with modifier support
+        KeyCode::Up => {
+            if xmod > 0 {
+                modified_special_key_csi(b'A', xmod)
+            } else if app_cursor {
+                vec![0x1b, b'O', b'A']
+            } else {
+                vec![0x1b, b'[', b'A']
+            }
+        }
+        KeyCode::Down => {
+            if xmod > 0 {
+                modified_special_key_csi(b'B', xmod)
+            } else if app_cursor {
+                vec![0x1b, b'O', b'B']
+            } else {
+                vec![0x1b, b'[', b'B']
+            }
+        }
+        KeyCode::Right => {
+            if xmod > 0 {
+                modified_special_key_csi(b'C', xmod)
+            } else if app_cursor {
+                vec![0x1b, b'O', b'C']
+            } else {
+                vec![0x1b, b'[', b'C']
+            }
+        }
+        KeyCode::Left => {
+            if xmod > 0 {
+                modified_special_key_csi(b'D', xmod)
+            } else if app_cursor {
+                vec![0x1b, b'O', b'D']
+            } else {
+                vec![0x1b, b'[', b'D']
+            }
+        }
+
+        // Navigation keys — with modifier support
+        KeyCode::Home => {
+            if xmod > 0 {
+                modified_special_key_csi(b'H', xmod)
+            } else {
+                vec![0x1b, b'[', b'H']
+            }
+        }
+        KeyCode::End => {
+            if xmod > 0 {
+                modified_special_key_csi(b'F', xmod)
+            } else {
+                vec![0x1b, b'[', b'F']
+            }
+        }
+        KeyCode::PageUp => {
+            if xmod > 0 {
+                modified_special_key_tilde(5, xmod)
+            } else {
+                vec![0x1b, b'[', b'5', b'~']
+            }
+        }
+        KeyCode::PageDown => {
+            if xmod > 0 {
+                modified_special_key_tilde(6, xmod)
+            } else {
+                vec![0x1b, b'[', b'6', b'~']
+            }
+        }
+        KeyCode::Insert => {
+            if xmod > 0 {
+                modified_special_key_tilde(2, xmod)
+            } else {
+                vec![0x1b, b'[', b'2', b'~']
+            }
+        }
+        KeyCode::Delete => {
+            if xmod > 0 {
+                modified_special_key_tilde(3, xmod)
+            } else {
+                vec![0x1b, b'[', b'3', b'~']
+            }
+        }
+
+        // Function keys — with modifier support
+        // F1-F4 use SS3 format without modifiers, CSI format with modifiers
+        KeyCode::F(1) => {
+            if xmod > 0 {
+                modified_special_key_csi(b'P', xmod)
+            } else {
+                vec![0x1b, b'O', b'P']
+            }
+        }
+        KeyCode::F(2) => {
+            if xmod > 0 {
+                modified_special_key_csi(b'Q', xmod)
+            } else {
+                vec![0x1b, b'O', b'Q']
+            }
+        }
+        KeyCode::F(3) => {
+            if xmod > 0 {
+                modified_special_key_csi(b'R', xmod)
+            } else {
+                vec![0x1b, b'O', b'R']
+            }
+        }
+        KeyCode::F(4) => {
+            if xmod > 0 {
+                modified_special_key_csi(b'S', xmod)
+            } else {
+                vec![0x1b, b'O', b'S']
+            }
+        }
+        // F5-F12 use tilde format
+        KeyCode::F(5) => {
+            if xmod > 0 {
+                modified_special_key_tilde(15, xmod)
+            } else {
+                vec![0x1b, b'[', b'1', b'5', b'~']
+            }
+        }
+        KeyCode::F(6) => {
+            if xmod > 0 {
+                modified_special_key_tilde(17, xmod)
+            } else {
+                vec![0x1b, b'[', b'1', b'7', b'~']
+            }
+        }
+        KeyCode::F(7) => {
+            if xmod > 0 {
+                modified_special_key_tilde(18, xmod)
+            } else {
+                vec![0x1b, b'[', b'1', b'8', b'~']
+            }
+        }
+        KeyCode::F(8) => {
+            if xmod > 0 {
+                modified_special_key_tilde(19, xmod)
+            } else {
+                vec![0x1b, b'[', b'1', b'9', b'~']
+            }
+        }
+        KeyCode::F(9) => {
+            if xmod > 0 {
+                modified_special_key_tilde(20, xmod)
+            } else {
+                vec![0x1b, b'[', b'2', b'0', b'~']
+            }
+        }
+        KeyCode::F(10) => {
+            if xmod > 0 {
+                modified_special_key_tilde(21, xmod)
+            } else {
+                vec![0x1b, b'[', b'2', b'1', b'~']
+            }
+        }
+        KeyCode::F(11) => {
+            if xmod > 0 {
+                modified_special_key_tilde(23, xmod)
+            } else {
+                vec![0x1b, b'[', b'2', b'3', b'~']
+            }
+        }
+        KeyCode::F(12) => {
+            if xmod > 0 {
+                modified_special_key_tilde(24, xmod)
+            } else {
+                vec![0x1b, b'[', b'2', b'4', b'~']
+            }
+        }
         _ => vec![],
     }
 }
@@ -237,9 +461,7 @@ pub fn event_to_bytes(
             let app_cursor = terminal.application_cursor();
             key_to_bytes(key, app_cursor)
         }
-        Event::Mouse(mouse) => {
-            mouse_to_bytes(mouse, terminal, term_area)
-        }
+        Event::Mouse(mouse) => mouse_to_bytes(mouse, terminal, term_area),
         Event::Paste(text) => {
             if terminal.bracketed_paste() {
                 let mut bytes = Vec::with_capacity(text.len() + 12);
@@ -292,10 +514,10 @@ fn mouse_to_bytes(
         MouseEventKind::Up(MouseButton::Left) => (0, true),
         MouseEventKind::Up(MouseButton::Middle) => (1, true),
         MouseEventKind::Up(MouseButton::Right) => (2, true),
-        MouseEventKind::Drag(MouseButton::Left) => (32, false),   // 0 + 32 (motion flag)
+        MouseEventKind::Drag(MouseButton::Left) => (32, false), // 0 + 32 (motion flag)
         MouseEventKind::Drag(MouseButton::Middle) => (33, false), // 1 + 32
-        MouseEventKind::Drag(MouseButton::Right) => (34, false),  // 2 + 32
-        MouseEventKind::Moved => (35, false), // 3 + 32 (no button + motion)
+        MouseEventKind::Drag(MouseButton::Right) => (34, false), // 2 + 32
+        MouseEventKind::Moved => (35, false),                   // 3 + 32 (no button + motion)
         MouseEventKind::ScrollUp => (64, false),
         MouseEventKind::ScrollDown => (65, false),
         MouseEventKind::ScrollLeft => (66, false),
@@ -303,10 +525,7 @@ fn mouse_to_bytes(
     };
 
     // Filter events based on the active mouse mode
-    let dominated_by_motion = matches!(
-        mouse.kind,
-        MouseEventKind::Drag(_) | MouseEventKind::Moved
-    );
+    let dominated_by_motion = matches!(mouse.kind, MouseEventKind::Drag(_) | MouseEventKind::Moved);
     let is_scroll = matches!(
         mouse.kind,
         MouseEventKind::ScrollUp
@@ -342,13 +561,22 @@ fn mouse_to_bytes(
 
     // Add modifier bits
     let mut cb_with_mods = cb;
-    if mouse.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+    if mouse
+        .modifiers
+        .contains(crossterm::event::KeyModifiers::SHIFT)
+    {
         cb_with_mods |= 4;
     }
-    if mouse.modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+    if mouse
+        .modifiers
+        .contains(crossterm::event::KeyModifiers::ALT)
+    {
         cb_with_mods |= 8;
     }
-    if mouse.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+    if mouse
+        .modifiers
+        .contains(crossterm::event::KeyModifiers::CONTROL)
+    {
         cb_with_mods |= 16;
     }
 
@@ -358,8 +586,7 @@ fn mouse_to_bytes(
             // SGR format: \x1b[<cb;cx;cyM (press/move) or \x1b[<cb;cx;cym (release)
             // SGR uses 1-based coordinates
             let suffix = if is_release { 'm' } else { 'M' };
-            format!("\x1b[<{};{};{}{}", cb_with_mods, cx + 1, cy + 1, suffix)
-                .into_bytes()
+            format!("\x1b[<{};{};{}{}", cb_with_mods, cx + 1, cy + 1, suffix).into_bytes()
         }
         _ => {
             // Default / UTF-8 encoding: \x1b[M cb cx cy
