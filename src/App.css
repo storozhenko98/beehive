@@ -1059,9 +1059,22 @@ select option {
 /* ---- Workspace ---- */
 
 .workspace-container {
+  position: absolute;
+  inset: 0;
+  display: flex;
   flex-direction: column;
-  height: 100%;
   overflow: hidden;
+}
+
+.workspace-container[data-hidden="true"] {
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.workspace-container[data-hidden="false"] {
+  visibility: visible;
+  z-index: 1;
 }
 
 .workspace-header {

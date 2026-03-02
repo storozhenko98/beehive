@@ -17,7 +17,7 @@ export function WorkspaceGrid({ comb, panes, customButtons, isVisible, focusedPa
   const cols = panes.length <= 1 ? 1 : panes.length <= 4 ? 2 : 3;
 
   return (
-    <div className="workspace-container" style={{ display: isVisible ? "flex" : "none" }}>
+    <div className="workspace-container" data-hidden={!isVisible ? "true" : "false"}>
       <div className="workspace-header">
         <div className="workspace-title">
           <strong>{comb.name}</strong>

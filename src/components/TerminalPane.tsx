@@ -29,6 +29,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
   const fitAddonRef = useRef<FitAddon | null>(null);
   // Track which PTY session is "ours" to ignore stale exit events
   const activeSessionRef = useRef<string | null>(null);
+  const lastSizeRef = useRef<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
   // Drag-drop visual feedback (ref avoids stale closures in event callbacks)
@@ -152,16 +153,22 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
       });
     });
 
-    // Handle resize
+    // Handle resize — only notify PTY if dimensions actually changed
+    // Uses lastSizeRef (shared with visibility effect) to avoid spurious SIGWINCH
+    lastSizeRef.current = { rows: terminal.rows, cols: terminal.cols };
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
-      invoke("resize_pty", {
-        id: sessionId,
-        rows: terminal.rows,
-        cols: terminal.cols,
-      }).catch(() => {
-        // PTY may have been closed
-      });
+      const { rows, cols } = terminal;
+      if (rows !== lastSizeRef.current.rows || cols !== lastSizeRef.current.cols) {
+        lastSizeRef.current = { rows, cols };
+        invoke("resize_pty", {
+          id: sessionId,
+          rows,
+          cols,
+        }).catch(() => {
+          // PTY may have been closed
+        });
+      }
     });
     resizeObserver.observe(containerRef.current);
 
@@ -216,23 +223,11 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
     };
   }, [id, cwd, cmd]);
 
-  // Re-fit when visibility changes
+  // Focus terminal when it becomes the active pane
   useEffect(() => {
-    if (isVisible && fitAddonRef.current && terminalRef.current) {
-      const currentSession = activeSessionRef.current;
-      // Delay to allow layout to settle after display change
+    if (isVisible && shouldFocus && terminalRef.current) {
       requestAnimationFrame(() => {
-        fitAddonRef.current?.fit();
-        if (shouldFocus) {
-          terminalRef.current?.focus();
-        }
-        if (terminalRef.current && currentSession) {
-          invoke("resize_pty", {
-            id: currentSession,
-            rows: terminalRef.current.rows,
-            cols: terminalRef.current.cols,
-          }).catch(() => {});
-        }
+        terminalRef.current?.focus();
       });
     }
   }, [isVisible, shouldFocus]);
