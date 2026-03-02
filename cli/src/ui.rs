@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
     render_footer(frame, app, vert[2]);
 
     // Content: sidebar | terminal
-    let sidebar_width = 28u16.min(frame.area().width / 3).max(20);
+    let sidebar_width = app.sidebar_width.min(frame.area().width / 2).max(20);
     let horiz = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -348,6 +348,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" s", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
                     Span::styled(" settings ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" </>", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(" resize ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
                     Span::styled(" ?", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
                     Span::styled(" help ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
@@ -378,7 +381,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame) {
-    let area = overlay_rect(60, 22, frame.area());
+    let area = overlay_rect(60, 23, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -409,6 +412,7 @@ fn render_help(frame: &mut Frame) {
         Line::from(vec![Span::styled("  c        ", key_style), Span::styled("Copy comb (duplicate workspace)", desc_style)]),
         Line::from(vec![Span::styled("  a        ", key_style), Span::styled("Add hive (GitHub repo)", desc_style)]),
         Line::from(vec![Span::styled("  d        ", key_style), Span::styled("Delete selected comb or hive", desc_style)]),
+        Line::from(vec![Span::styled("  </>/H/L  ", key_style), Span::styled("Resize sidebar", desc_style)]),
         Line::from(vec![Span::styled("  r        ", key_style), Span::styled("Refresh sidebar", desc_style)]),
         Line::from(vec![Span::styled("  s        ", key_style), Span::styled("Settings", desc_style)]),
         Line::from(vec![Span::styled("  q        ", key_style), Span::styled("Quit", desc_style)]),

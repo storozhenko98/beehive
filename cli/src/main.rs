@@ -125,6 +125,7 @@ fn ensure_config() -> Result<String, Box<dyn std::error::Error>> {
         beehive_dir: Some(dir.clone()),
         mux_preference: None,
         cli_command: None,
+        sidebar_width: 28,
     })
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
@@ -338,6 +339,16 @@ fn handle_key(
                         }
                         KeyCode::Char('s') => app.open_settings(),
                         KeyCode::Char('?') => app.open_help(),
+                        KeyCode::Char('<') | KeyCode::Char('H') => {
+                            if app.sidebar_width > 20 {
+                                app.sidebar_width -= 2;
+                                app.save_sidebar_width();
+                            }
+                        }
+                        KeyCode::Char('>') | KeyCode::Char('L') => {
+                            app.sidebar_width += 2;
+                            app.save_sidebar_width();
+                        }
                         KeyCode::Char('u') => {
                             if let Some(ver) = app.update_available.clone() {
                                 app.status_message = Some(format!("Updating to v{}...", ver));

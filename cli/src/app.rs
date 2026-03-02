@@ -94,10 +94,12 @@ pub struct App {
     pub last_term_size: (u16, u16),
     pub pending_clone: Option<Arc<Mutex<Option<CloneResult>>>>,
     pub update_available: Option<String>,
+    pub sidebar_width: u16,
 }
 
 impl App {
     pub fn new(beehive_dir: String) -> Result<Self, String> {
+        let config = load_app_config()?;
         let mut app = App {
             beehive_dir,
             items: vec![],
@@ -111,9 +113,17 @@ impl App {
             last_term_size: (0, 0),
             pending_clone: None,
             update_available: None,
+            sidebar_width: config.sidebar_width,
         };
         app.load_all(true)?;
         Ok(app)
+    }
+
+    pub fn save_sidebar_width(&self) {
+        if let Ok(mut config) = load_app_config() {
+            config.sidebar_width = self.sidebar_width;
+            let _ = save_app_config(&config);
+        }
     }
 
     pub fn load_all(&mut self, expand_all: bool) -> Result<(), String> {

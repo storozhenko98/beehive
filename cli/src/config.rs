@@ -13,6 +13,12 @@ pub struct AppConfig {
     pub mux_preference: Option<String>,
     #[serde(default)]
     pub cli_command: Option<String>,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: u16,
+}
+
+fn default_sidebar_width() -> u16 {
+    28
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -200,6 +206,7 @@ pub fn load_app_config() -> Result<AppConfig, String> {
             beehive_dir: None,
             mux_preference: None,
             cli_command: None,
+            sidebar_width: 28,
         });
     }
     let data =
