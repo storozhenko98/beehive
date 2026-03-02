@@ -10,7 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
+        EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyModifiers,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -18,7 +21,6 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use app::{App, AppMode, CloneResult, ConfirmAction, Focus, InputAction};
 use config::*;
-use terminal::key_to_bytes;
 
 type Term = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -47,7 +49,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        EnableFocusChange,
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -71,7 +79,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let result = run_app(&mut terminal, &mut app, update_slot);
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        DisableFocusChange,
+        LeaveAlternateScreen,
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -156,12 +170,56 @@ fn run_app(
         }
 
         if event::poll(Duration::from_millis(16))? {
-            match event::read()? {
-                Event::Key(key) => {
-                    handle_key(app, key, terminal)?;
+            let evt = event::read()?;
+
+            // In terminal focus, forward all events (mouse, paste, focus) directly to PTY
+            if app.focus == Focus::Terminal && matches!(app.mode, AppMode::Normal) {
+                match &evt {
+                    Event::Key(key) => {
+                        // Check escape hatch (Ctrl+Space) first
+                        if is_focus_toggle(key) {
+                            app.focus = Focus::Sidebar;
+                        } else if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            if let Some(t) = app.active_terminal() {
+                                t.write_input(&[0x03]);
+                            }
+                        } else if let Some(t) = app.active_terminal() {
+                            let bytes =
+                                terminal::event_to_bytes(&evt, t, term_area);
+                            if !bytes.is_empty() {
+                                t.write_input(&bytes);
+                            }
+                        }
+                    }
+                    Event::Mouse(_) | Event::Paste(_) | Event::FocusGained | Event::FocusLost => {
+                        if let Some(t) = app.active_terminal() {
+                            let bytes =
+                                terminal::event_to_bytes(&evt, t, term_area);
+                            if !bytes.is_empty() {
+                                t.write_input(&bytes);
+                            }
+                        }
+                    }
+                    Event::Resize(_, _) => {}
                 }
-                Event::Resize(_, _) => {}
-                _ => {}
+            } else {
+                match evt {
+                    Event::Key(key) => {
+                        handle_key(app, key, terminal)?;
+                    }
+                    Event::Paste(text) => {
+                        // Insert pasted text into active input field
+                        if let AppMode::Input { value, .. } = &mut app.mode {
+                            value.push_str(&text);
+                        } else if let AppMode::BranchPicker { filter, selected, .. } = &mut app.mode {
+                            filter.push_str(&text);
+                            *selected = 0;
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -239,42 +297,19 @@ fn handle_key(
         _ => {}
     }
 
-    // Global: Ctrl+C
-    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        if app.focus == Focus::Terminal {
-            if let Some(t) = app.active_terminal() {
-                t.write_input(&[0x03]);
-            }
-            return Ok(());
-        }
-        app.should_quit = true;
-        return Ok(());
-    }
 
-    // Focus toggle
+    // Focus toggle: Ctrl+Space to switch to terminal (sidebar → terminal)
     if is_focus_toggle(&key) {
-        app.focus = match app.focus {
-            Focus::Sidebar => {
-                if app.active_terminal().is_some() {
-                    Focus::Terminal
-                } else {
-                    Focus::Sidebar
-                }
-            }
-            Focus::Terminal => Focus::Sidebar,
-        };
+        if app.focus == Focus::Sidebar && app.active_terminal().is_some() {
+            app.focus = Focus::Terminal;
+        }
         return Ok(());
     }
 
     match app.focus {
         Focus::Terminal => {
-            if let Some(t) = app.active_terminal() {
-                let app_cursor = t.application_cursor();
-                let bytes = key_to_bytes(&key, app_cursor);
-                if !bytes.is_empty() {
-                    t.write_input(&bytes);
-                }
-            }
+            // Terminal focus with non-Normal mode (overlay showing) — ignore keys
+            // (the overlay-specific handlers above already returned for Help/Settings/BranchPicker)
         }
         Focus::Sidebar => {
             match &app.mode {

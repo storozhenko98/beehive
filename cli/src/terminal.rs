@@ -55,17 +55,20 @@ impl EmbeddedTerminal {
         let master = Arc::new(Mutex::new(pair.master));
         let writer = Arc::new(Mutex::new(writer));
 
-        // Background reader: PTY output -> vt100 parser
+        // Background reader: PTY output -> vt100 parser + OSC 52 clipboard detection
         let parser_clone = Arc::clone(&parser);
         let alive_clone = Arc::clone(&alive);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut osc52 = Osc52Detector::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        let data = &buf[..n];
+                        osc52.process(data);
                         if let Ok(mut p) = parser_clone.write() {
-                            p.process(&buf[..n]);
+                            p.process(data);
                         }
                     }
                     Err(_) => break,
@@ -124,6 +127,27 @@ impl EmbeddedTerminal {
         self.parser
             .read()
             .map(|p| p.screen().application_cursor())
+            .unwrap_or(false)
+    }
+
+    pub fn mouse_protocol_mode(&self) -> vt100::MouseProtocolMode {
+        self.parser
+            .read()
+            .map(|p| p.screen().mouse_protocol_mode())
+            .unwrap_or(vt100::MouseProtocolMode::None)
+    }
+
+    pub fn mouse_protocol_encoding(&self) -> vt100::MouseProtocolEncoding {
+        self.parser
+            .read()
+            .map(|p| p.screen().mouse_protocol_encoding())
+            .unwrap_or(vt100::MouseProtocolEncoding::Default)
+    }
+
+    pub fn bracketed_paste(&self) -> bool {
+        self.parser
+            .read()
+            .map(|p| p.screen().bracketed_paste())
             .unwrap_or(false)
     }
 }
@@ -195,5 +219,274 @@ pub fn key_to_bytes(key: &crossterm::event::KeyEvent, app_cursor: bool) -> Vec<u
         KeyCode::F(11) => vec![0x1b, b'[', b'2', b'3', b'~'],
         KeyCode::F(12) => vec![0x1b, b'[', b'2', b'4', b'~'],
         _ => vec![],
+    }
+}
+
+/// Translate any crossterm Event into bytes to forward to the PTY.
+/// Handles key, mouse, paste, and focus events.
+/// `term_area` is the Rect of the terminal pane content area (for mouse coordinate adjustment).
+pub fn event_to_bytes(
+    event: &crossterm::event::Event,
+    terminal: &EmbeddedTerminal,
+    term_area: ratatui::layout::Rect,
+) -> Vec<u8> {
+    use crossterm::event::Event;
+
+    match event {
+        Event::Key(key) => {
+            let app_cursor = terminal.application_cursor();
+            key_to_bytes(key, app_cursor)
+        }
+        Event::Mouse(mouse) => {
+            mouse_to_bytes(mouse, terminal, term_area)
+        }
+        Event::Paste(text) => {
+            if terminal.bracketed_paste() {
+                let mut bytes = Vec::with_capacity(text.len() + 12);
+                bytes.extend_from_slice(b"\x1b[200~");
+                bytes.extend_from_slice(text.as_bytes());
+                bytes.extend_from_slice(b"\x1b[201~");
+                bytes
+            } else {
+                text.as_bytes().to_vec()
+            }
+        }
+        Event::FocusGained => b"\x1b[I".to_vec(),
+        Event::FocusLost => b"\x1b[O".to_vec(),
+        Event::Resize(_, _) => vec![],
+    }
+}
+
+/// Encode a crossterm MouseEvent to bytes for the PTY, respecting the inner app's
+/// mouse protocol mode and encoding. Coordinates are adjusted relative to term_area.
+fn mouse_to_bytes(
+    mouse: &crossterm::event::MouseEvent,
+    terminal: &EmbeddedTerminal,
+    term_area: ratatui::layout::Rect,
+) -> Vec<u8> {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    use vt100::MouseProtocolMode;
+
+    let mode = terminal.mouse_protocol_mode();
+    if mode == MouseProtocolMode::None {
+        return vec![];
+    }
+
+    // Adjust coordinates relative to the terminal pane area
+    let col = mouse.column as i32 - term_area.x as i32;
+    let row = mouse.row as i32 - term_area.y as i32;
+
+    // Ignore mouse events outside the terminal pane
+    if col < 0 || row < 0 || col >= term_area.width as i32 || row >= term_area.height as i32 {
+        return vec![];
+    }
+
+    let cx = col as u16;
+    let cy = row as u16;
+
+    // Determine the button code (cb) per X10/SGR convention
+    let (cb, is_release) = match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => (0u8, false),
+        MouseEventKind::Down(MouseButton::Middle) => (1, false),
+        MouseEventKind::Down(MouseButton::Right) => (2, false),
+        MouseEventKind::Up(MouseButton::Left) => (0, true),
+        MouseEventKind::Up(MouseButton::Middle) => (1, true),
+        MouseEventKind::Up(MouseButton::Right) => (2, true),
+        MouseEventKind::Drag(MouseButton::Left) => (32, false),   // 0 + 32 (motion flag)
+        MouseEventKind::Drag(MouseButton::Middle) => (33, false), // 1 + 32
+        MouseEventKind::Drag(MouseButton::Right) => (34, false),  // 2 + 32
+        MouseEventKind::Moved => (35, false), // 3 + 32 (no button + motion)
+        MouseEventKind::ScrollUp => (64, false),
+        MouseEventKind::ScrollDown => (65, false),
+        MouseEventKind::ScrollLeft => (66, false),
+        MouseEventKind::ScrollRight => (67, false),
+    };
+
+    // Filter events based on the active mouse mode
+    let dominated_by_motion = matches!(
+        mouse.kind,
+        MouseEventKind::Drag(_) | MouseEventKind::Moved
+    );
+    let is_scroll = matches!(
+        mouse.kind,
+        MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight
+    );
+
+    match mode {
+        MouseProtocolMode::None => return vec![],
+        MouseProtocolMode::Press => {
+            // Only report button press events (and scrolls)
+            if is_release || dominated_by_motion {
+                return vec![];
+            }
+        }
+        MouseProtocolMode::PressRelease => {
+            // Report press and release, but not motion
+            if dominated_by_motion {
+                return vec![];
+            }
+        }
+        MouseProtocolMode::ButtonMotion => {
+            // Report press, release, and drag — but not bare Moved
+            if matches!(mouse.kind, MouseEventKind::Moved) {
+                return vec![];
+            }
+        }
+        MouseProtocolMode::AnyMotion => {
+            // Report everything
+        }
+    }
+
+    // Add modifier bits
+    let mut cb_with_mods = cb;
+    if mouse.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+        cb_with_mods |= 4;
+    }
+    if mouse.modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+        cb_with_mods |= 8;
+    }
+    if mouse.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+        cb_with_mods |= 16;
+    }
+
+    let encoding = terminal.mouse_protocol_encoding();
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => {
+            // SGR format: \x1b[<cb;cx;cyM (press/move) or \x1b[<cb;cx;cym (release)
+            // SGR uses 1-based coordinates
+            let suffix = if is_release { 'm' } else { 'M' };
+            format!("\x1b[<{};{};{}{}", cb_with_mods, cx + 1, cy + 1, suffix)
+                .into_bytes()
+        }
+        _ => {
+            // Default / UTF-8 encoding: \x1b[M cb cx cy
+            // cb is button + 32, cx and cy are coordinate + 32 + 1 (1-based, offset by 32)
+            if is_release && !is_scroll {
+                // In default encoding, release is button code 3 (meaning "no button")
+                let release_cb = 3u8 + 32;
+                let enc_x = (cx as u8).saturating_add(32 + 1);
+                let enc_y = (cy as u8).saturating_add(32 + 1);
+                vec![0x1b, b'[', b'M', release_cb, enc_x, enc_y]
+            } else {
+                let enc_cb = cb_with_mods.saturating_add(32);
+                let enc_x = (cx as u8).saturating_add(32 + 1);
+                let enc_y = (cy as u8).saturating_add(32 + 1);
+                vec![0x1b, b'[', b'M', enc_cb, enc_x, enc_y]
+            }
+        }
+    }
+}
+
+// --- OSC 52 clipboard support ---
+// Detects OSC 52 escape sequences in PTY output and sets the system clipboard.
+// Format: \x1b]52;<selection>;<base64-data>\x07  (or \x1b\\ as terminator)
+
+const OSC52_PREFIX: &[u8] = b"\x1b]52;";
+
+struct Osc52Detector {
+    prefix_matched: usize,
+    payload: Vec<u8>,
+    collecting: bool,
+}
+
+impl Osc52Detector {
+    fn new() -> Self {
+        Self {
+            prefix_matched: 0,
+            payload: Vec::new(),
+            collecting: false,
+        }
+    }
+
+    fn process(&mut self, data: &[u8]) {
+        for &b in data {
+            if self.collecting {
+                if b == 0x07 {
+                    // BEL terminator — sequence complete
+                    self.handle_complete();
+                } else if b == b'\\' && self.payload.last() == Some(&0x1b) {
+                    // ST terminator (ESC \) — remove the ESC we buffered, sequence complete
+                    self.payload.pop();
+                    self.handle_complete();
+                } else {
+                    self.payload.push(b);
+                    if self.payload.len() > 100_000 {
+                        // Safety limit
+                        self.payload.clear();
+                        self.collecting = false;
+                    }
+                }
+            } else {
+                if b == OSC52_PREFIX[self.prefix_matched] {
+                    self.prefix_matched += 1;
+                    if self.prefix_matched == OSC52_PREFIX.len() {
+                        self.collecting = true;
+                        self.prefix_matched = 0;
+                    }
+                } else {
+                    // Reset, but check if this byte starts a new match
+                    self.prefix_matched = if b == OSC52_PREFIX[0] { 1 } else { 0 };
+                }
+            }
+        }
+    }
+
+    fn handle_complete(&mut self) {
+        self.collecting = false;
+        // Payload is: <selection>;<base64-data>
+        // e.g., "c;SGVsbG8=" where c=clipboard
+        if let Some(semi_pos) = self.payload.iter().position(|&b| b == b';') {
+            let b64_data = &self.payload[semi_pos + 1..];
+            if b64_data == b"?" {
+                // Query request, not a set — ignore
+                self.payload.clear();
+                return;
+            }
+            if let Some(decoded) = base64_decode(b64_data) {
+                set_clipboard(&decoded);
+            }
+        }
+        self.payload.clear();
+    }
+}
+
+fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = Vec::new();
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+
+    for &b in input {
+        if b == b'=' || b == b'\n' || b == b'\r' || b == b' ' {
+            continue;
+        }
+        let val = TABLE.iter().position(|&c| c == b)? as u32;
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            result.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(result)
+}
+
+fn set_clipboard(text: &[u8]) {
+    use std::process::{Command, Stdio};
+
+    if let Ok(mut child) = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(text);
+        }
+        let _ = child.wait();
     }
 }
