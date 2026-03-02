@@ -43,12 +43,31 @@ TMPFILE=$(mktemp)
 curl -fsSL -o "$TMPFILE" "$DOWNLOAD_URL"
 chmod +x "$TMPFILE"
 
-echo "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
-if [ -w "$INSTALL_DIR" ]; then
-  mv "$TMPFILE" "${INSTALL_DIR}/${BINARY_NAME}"
-else
-  sudo mv "$TMPFILE" "${INSTALL_DIR}/${BINARY_NAME}"
+# Choose command name
+CMD_NAME="${BH_CMD_NAME:-}"
+if [ -z "$CMD_NAME" ]; then
+  if [ -t 0 ]; then
+    echo ""
+    echo "Command name?"
+    echo "  [1] bh       (short, recommended)"
+    echo "  [2] beehive  (full name)"
+    printf "Choice [1]: "
+    read -r choice
+    case "$choice" in
+      2|beehive) CMD_NAME="beehive" ;;
+      *) CMD_NAME="bh" ;;
+    esac
+  else
+    CMD_NAME="bh"
+  fi
 fi
 
-echo "Installed ${BINARY_NAME} ${LATEST_TAG} to ${INSTALL_DIR}/${BINARY_NAME}"
-echo "Run 'beehive-tui' to start."
+echo "Installing to ${INSTALL_DIR}/${CMD_NAME}..."
+if [ -w "$INSTALL_DIR" ]; then
+  mv "$TMPFILE" "${INSTALL_DIR}/${CMD_NAME}"
+else
+  sudo mv "$TMPFILE" "${INSTALL_DIR}/${CMD_NAME}"
+fi
+
+echo "Installed ${CMD_NAME} ${LATEST_TAG} to ${INSTALL_DIR}/${CMD_NAME}"
+echo "Run '${CMD_NAME}' to start."

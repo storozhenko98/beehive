@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub beehive_dir: Option<String>,
     #[serde(default)]
     pub mux_preference: Option<String>,
+    #[serde(default)]
+    pub cli_command: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -197,6 +199,7 @@ pub fn load_app_config() -> Result<AppConfig, String> {
         return Ok(AppConfig {
             beehive_dir: None,
             mux_preference: None,
+            cli_command: None,
         });
     }
     let data =

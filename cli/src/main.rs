@@ -110,6 +110,7 @@ fn ensure_config() -> Result<String, Box<dyn std::error::Error>> {
     save_app_config(&AppConfig {
         beehive_dir: Some(dir.clone()),
         mux_preference: None,
+        cli_command: None,
     })
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 

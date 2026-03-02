@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-#[cfg(unix)]
-use std::os::unix;
 
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -181,6 +179,8 @@ pub async fn preflight_check() -> Result<PreflightResult, String> {
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub beehive_dir: Option<String>,
+    #[serde(default)]
+    pub cli_command: Option<String>,
 }
 
 fn app_config_path() -> std::path::PathBuf {
@@ -201,7 +201,7 @@ pub async fn get_home_dir() -> Result<String, String> {
 pub async fn load_app_config() -> Result<AppConfig, String> {
     let path = app_config_path();
     if !path.exists() {
-        return Ok(AppConfig { beehive_dir: None });
+        return Ok(AppConfig { beehive_dir: None, cli_command: None });
     }
     let data = fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read app config: {}", e))?;
@@ -768,57 +768,147 @@ pub async fn copy_comb(
     Ok(comb)
 }
 
-#[tauri::command]
-pub async fn install_cli() -> Result<String, String> {
-    let link_path = "/usr/local/bin/beehive";
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("Cannot determine app path: {}", e))?;
-    let target = exe.to_string_lossy().to_string();
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliStatusResult {
+    pub installed: bool,
+    pub cmd_name: Option<String>,
+    pub path: Option<String>,
+}
 
-    // Remove existing symlink/file if present
-    let link = Path::new(link_path);
-    if link.exists() || link.symlink_metadata().is_ok() {
-        fs::remove_file(link)
-            .map_err(|e| format!("Failed to remove existing {}: {}. Try: sudo rm {}", link_path, e, link_path))?;
+#[tauri::command]
+pub async fn install_cli(cmd_name: String) -> Result<String, String> {
+    // Validate command name
+    if cmd_name != "bh" && cmd_name != "beehive" {
+        return Err("Command name must be 'bh' or 'beehive'".to_string());
+    }
+
+    let version = env!("CARGO_PKG_VERSION");
+    let url = format!(
+        "https://github.com/storozhenko98/beehive/releases/download/v{}/beehive-tui-darwin-arm64",
+        version
+    );
+    let install_path = format!("/usr/local/bin/{}", cmd_name);
+
+    // Download to temp file
+    let tmp = std::env::temp_dir().join("beehive-cli-install");
+    let output = Command::new("curl")
+        .args(["-fsSL", "-o", &tmp.to_string_lossy(), &url])
+        .output()
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Download failed: {}",
+            String::from_utf8_lossy(&output.stderr).lines().next().unwrap_or("unknown error")
+        ));
+    }
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755));
     }
 
     // Ensure /usr/local/bin exists
-    let parent = link.parent().unwrap();
+    let parent = Path::new("/usr/local/bin");
     if !parent.exists() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create /usr/local/bin: {}", e))?;
     }
 
-    unix::fs::symlink(&target, link_path)
-        .map_err(|e| format!("Failed to create symlink: {}. Try: sudo ln -sf \"{}\" {}", e, target, link_path))?;
+    // Remove any existing file at the target path
+    let dest = Path::new(&install_path);
+    if dest.exists() || dest.symlink_metadata().is_ok() {
+        fs::remove_file(dest)
+            .map_err(|e| format!("Failed to remove existing {}: {}. Try: sudo rm {}", install_path, e, install_path))?;
+    }
 
-    Ok(link_path.to_string())
+    // Move binary into place
+    fs::rename(&tmp, &install_path)
+        .or_else(|_| fs::copy(&tmp, &install_path).map(|_| ()))
+        .map_err(|e| format!("Failed to install to {}: {}. Check permissions.", install_path, e))?;
+    let _ = fs::remove_file(&tmp);
+
+    // Save command name preference to config
+    let mut config = load_app_config().await?;
+    config.cli_command = Some(cmd_name.clone());
+    save_app_config(config).await?;
+
+    Ok(install_path)
 }
 
 #[tauri::command]
 pub async fn uninstall_cli() -> Result<(), String> {
-    let link_path = "/usr/local/bin/beehive";
-    let link = Path::new(link_path);
-    if link.symlink_metadata().is_ok() {
-        fs::remove_file(link)
-            .map_err(|e| format!("Failed to remove {}: {}. Try: sudo rm {}", link_path, e, link_path))?;
+    // Check config for stored preference
+    let config = load_app_config().await?;
+    let mut removed = false;
+
+    if let Some(ref name) = config.cli_command {
+        let path = format!("/usr/local/bin/{}", name);
+        let p = Path::new(&path);
+        if p.exists() {
+            fs::remove_file(p)
+                .map_err(|e| format!("Failed to remove {}: {}. Try: sudo rm {}", path, e, path))?;
+            removed = true;
+        }
     }
+
+    // Also check the other name as fallback
+    if !removed {
+        for name in &["bh", "beehive"] {
+            let path = format!("/usr/local/bin/{}", name);
+            let p = Path::new(&path);
+            if p.exists() {
+                fs::remove_file(p)
+                    .map_err(|e| format!("Failed to remove {}: {}. Try: sudo rm {}", path, e, path))?;
+                break;
+            }
+        }
+    }
+
+    // Clear config preference
+    let mut config = load_app_config().await?;
+    config.cli_command = None;
+    save_app_config(config).await?;
+
     Ok(())
 }
 
 #[tauri::command]
-pub async fn cli_status() -> Result<Option<String>, String> {
-    let link_path = "/usr/local/bin/beehive";
-    let link = Path::new(link_path);
-    match link.symlink_metadata() {
-        Ok(_) => {
-            match fs::read_link(link) {
-                Ok(target) => Ok(Some(target.to_string_lossy().to_string())),
-                Err(_) => Ok(Some("installed (not a symlink)".to_string())),
-            }
+pub async fn cli_status() -> Result<CliStatusResult, String> {
+    let config = load_app_config().await?;
+
+    // Check config preference first
+    if let Some(ref name) = config.cli_command {
+        let path = format!("/usr/local/bin/{}", name);
+        if Path::new(&path).exists() {
+            return Ok(CliStatusResult {
+                installed: true,
+                cmd_name: Some(name.clone()),
+                path: Some(path),
+            });
         }
-        Err(_) => Ok(None),
     }
+
+    // Fallback: check both names
+    for name in &["bh", "beehive"] {
+        let path = format!("/usr/local/bin/{}", name);
+        if Path::new(&path).exists() {
+            return Ok(CliStatusResult {
+                installed: true,
+                cmd_name: Some(name.to_string()),
+                path: Some(path),
+            });
+        }
+    }
+
+    Ok(CliStatusResult {
+        installed: false,
+        cmd_name: None,
+        path: None,
+    })
 }
 
 // --- helpers ---

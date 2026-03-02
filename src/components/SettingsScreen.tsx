@@ -25,7 +25,10 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [appVersion, setAppVersion] = useState("");
-  const [cliTarget, setCliTarget] = useState<string | null | undefined>(undefined);
+  const [cliInstalled, setCliInstalled] = useState<boolean | undefined>(undefined);
+  const [cliCmdName, setCliCmdName] = useState<string | null>(null);
+  const [cliPath, setCliPath] = useState<string | null>(null);
+  const [cliChoice, setCliChoice] = useState<"bh" | "beehive">("bh");
   const [cliLoading, setCliLoading] = useState(false);
   const [cliError, setCliError] = useState("");
   const [updateStatus, setUpdateStatus] = useState<
@@ -62,10 +65,15 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
 
   async function checkCli() {
     try {
-      const target = await invoke<string | null>("cli_status");
-      setCliTarget(target);
+      const result = await invoke<{ installed: boolean; cmdName: string | null; path: string | null }>("cli_status");
+      setCliInstalled(result.installed);
+      setCliCmdName(result.cmdName);
+      setCliPath(result.path);
+      if (result.cmdName) {
+        setCliChoice(result.cmdName as "bh" | "beehive");
+      }
     } catch {
-      setCliTarget(null);
+      setCliInstalled(false);
     }
   }
 
@@ -73,7 +81,7 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
     setCliLoading(true);
     setCliError("");
     try {
-      await invoke<string>("install_cli");
+      await invoke<string>("install_cli", { cmdName: cliChoice });
       await checkCli();
     } catch (e) {
       setCliError(`${e}`);
@@ -247,17 +255,21 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
         </div>
 
         <div className="settings-section">
-          <h3>CLI Command</h3>
+          <h3>CLI / TUI</h3>
           <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 8 }}>
-            Launch Beehive from any terminal with the <code>beehive</code> command.
+            Install the Beehive TUI for terminal use. Same workspaces, shared config.
           </p>
-          {cliTarget === undefined ? (
+          {cliInstalled === undefined ? (
             <p style={{ color: "var(--text-muted)", fontSize: 12 }}>Checking...</p>
-          ) : cliTarget ? (
+          ) : cliInstalled ? (
             <>
               <div className="settings-row">
-                <span className="settings-label">Symlink</span>
-                <code className="settings-value">/usr/local/bin/beehive</code>
+                <span className="settings-label">Command</span>
+                <code className="settings-value">{cliCmdName}</code>
+              </div>
+              <div className="settings-row">
+                <span className="settings-label">Path</span>
+                <code className="settings-value">{cliPath}</code>
               </div>
               <button
                 className="btn btn-secondary"
@@ -269,13 +281,34 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
               </button>
             </>
           ) : (
-            <button
-              className="btn btn-primary"
-              onClick={handleInstallCli}
-              disabled={cliLoading}
-            >
-              {cliLoading ? "Installing..." : "Install"}
-            </button>
+            <>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <button
+                  className={`btn ${cliChoice === "bh" ? "btn-primary" : "btn-secondary"}`}
+                  onClick={() => setCliChoice("bh")}
+                  style={{ padding: "4px 14px", fontSize: 12 }}
+                >
+                  bh
+                </button>
+                <button
+                  className={`btn ${cliChoice === "beehive" ? "btn-primary" : "btn-secondary"}`}
+                  onClick={() => setCliChoice("beehive")}
+                  style={{ padding: "4px 14px", fontSize: 12 }}
+                >
+                  beehive
+                </button>
+                <span style={{ color: "var(--text-muted)", fontSize: 11, alignSelf: "center" }}>
+                  installed as /usr/local/bin/{cliChoice}
+                </span>
+              </div>
+              <button
+                className="btn btn-primary"
+                onClick={handleInstallCli}
+                disabled={cliLoading}
+              >
+                {cliLoading ? "Downloading..." : "Install"}
+              </button>
+            </>
           )}
           {cliError && <div className="error-box" style={{ marginTop: 6 }}>{cliError}</div>}
         </div>
