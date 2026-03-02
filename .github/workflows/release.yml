@@ -28,7 +28,12 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            cli
+
+      - name: Build CLI
+        run: cd cli && cargo build --release --target aarch64-apple-darwin
 
       - name: Install frontend dependencies
         run: npm ci
@@ -71,3 +76,10 @@ jobs:
           releaseName: Beehive v__VERSION__
           releaseDraft: false
           args: --target aarch64-apple-darwin
+
+      - name: Upload CLI binary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp cli/target/aarch64-apple-darwin/release/beehive-tui beehive-tui-darwin-arm64
+          gh release upload "${GITHUB_REF_NAME}" beehive-tui-darwin-arm64 --clobber || true
