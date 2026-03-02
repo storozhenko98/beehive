@@ -41,7 +41,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
         ])
         .split(frame.area());
 
-    render_header(frame, vert[0]);
+    render_header(frame, app, vert[0]);
     render_footer(frame, app, vert[2]);
 
     // Content: sidebar | terminal
@@ -79,8 +79,8 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
     term_inner
 }
 
-fn render_header(frame: &mut Frame, area: Rect) {
-    let header = Paragraph::new(Line::from(vec![
+fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    let mut spans = vec![
         Span::styled(
             " beehive",
             Style::default()
@@ -91,8 +91,17 @@ fn render_header(frame: &mut Frame, area: Rect) {
             format!(" v{}", env!("CARGO_PKG_VERSION")),
             Style::default().fg(OVERLAY0),
         ),
-    ]))
-    .style(Style::default().bg(MANTLE));
+    ];
+
+    if let Some(ver) = &app.update_available {
+        spans.push(Span::styled(
+            format!("  v{} available — 'u' to update", ver),
+            Style::default().fg(GREEN),
+        ));
+    }
+
+    let header = Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(MANTLE));
     frame.render_widget(header, area);
 }
 
@@ -350,6 +359,13 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" │", Style::default().fg(SURFACE1)),
                         Span::styled(" C-Spc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
                         Span::styled(" terminal", Style::default().fg(OVERLAY0)),
+                    ]);
+                }
+                if app.update_available.is_some() {
+                    spans.extend([
+                        Span::styled(" │", Style::default().fg(SURFACE1)),
+                        Span::styled(" u", Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+                        Span::styled(" update", Style::default().fg(OVERLAY0)),
                     ]);
                 }
                 Line::from(spans)

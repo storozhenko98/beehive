@@ -93,6 +93,7 @@ pub struct App {
     pub terminals: HashMap<String, EmbeddedTerminal>,
     pub last_term_size: (u16, u16),
     pub pending_clone: Option<Arc<Mutex<Option<CloneResult>>>>,
+    pub update_available: Option<String>,
 }
 
 impl App {
@@ -109,6 +110,7 @@ impl App {
             terminals: HashMap::new(),
             last_term_size: (0, 0),
             pending_clone: None,
+            update_available: None,
         };
         app.load_all(true)?;
         Ok(app)

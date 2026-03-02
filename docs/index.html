@@ -385,6 +385,44 @@
       color: var(--surface2); font-size: 18px; z-index: 1;
     }
 
+    /* ── CLI ──────────────────────────────────── */
+
+    .cli-section { padding: 80px 0; }
+
+    .cli-box {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
+      padding: 48px 40px; max-width: 700px; margin: 0 auto;
+    }
+
+    .cli-box h3 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+    .cli-box p { font-size: 14px; color: var(--text2); line-height: 1.6; margin-bottom: 20px; }
+
+    .cli-install {
+      position: relative; background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 48px 14px 16px; overflow-x: auto;
+    }
+
+    .cli-install code {
+      font-size: 13px; color: var(--green); white-space: nowrap;
+    }
+
+    .cli-copy-btn {
+      position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text2); font-size: 12px; padding: 4px 10px; cursor: pointer;
+      font-family: inherit; transition: all 0.2s;
+    }
+    .cli-copy-btn:hover { background: var(--surface2); color: var(--text); }
+
+    .cli-features {
+      display: flex; gap: 24px; margin-top: 24px; flex-wrap: wrap;
+    }
+
+    .cli-feat {
+      flex: 1; min-width: 160px; font-size: 13px; color: var(--text2);
+    }
+    .cli-feat strong { color: var(--text); display: block; margin-bottom: 2px; font-size: 13px; }
+
     /* ── CTA ──────────────────────────────────── */
 
     .cta { padding: 80px 0; text-align: center; }
@@ -438,6 +476,7 @@
       <div class="nav-links">
         <a href="#features">Features</a>
         <a href="#how-it-works">How it works</a>
+        <a href="#cli">CLI</a>
         <a href="https://github.com/storozhenko98/beehive">GitHub</a>
         <a href="https://github.com/storozhenko98/beehive/releases/latest" class="btn-nav">Download</a>
       </div>
@@ -628,6 +667,24 @@
           <div class="step-number">3</div>
           <h3>Open Panes</h3>
           <p>Launch terminals and agents side-by-side. Work on multiple tasks at once.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cli-section" id="cli">
+      <p class="section-label">CLI / TUI</p>
+      <h2 class="section-title">Prefer the terminal?</h2>
+      <div class="cli-box">
+        <h3>Beehive TUI</h3>
+        <p>A terminal-native interface with the same workspace management, embedded terminals, and shared config as the desktop app. One install command, no dependencies beyond git and gh.</p>
+        <div class="cli-install">
+          <code id="cli-cmd">curl -fsSL https://raw.githubusercontent.com/storozhenko98/beehive/main/install.sh | bash</code>
+          <button class="cli-copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('cli-cmd').textContent).then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+        </div>
+        <div class="cli-features">
+          <div class="cli-feat"><strong>Same config</strong>Shares ~/.beehive with the GUI app</div>
+          <div class="cli-feat"><strong>Embedded PTY</strong>Full terminal emulator inside the TUI</div>
+          <div class="cli-feat"><strong>Auto-update</strong>Checks for updates on startup</div>
         </div>
       </div>
     </section>

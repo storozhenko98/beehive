@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod terminal;
 mod ui;
+mod update;
 
 use std::io;
 use std::path::Path;
@@ -57,7 +58,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.status_message = Some(warn.clone());
     }
 
-    let result = run_app(&mut terminal, &mut app);
+    // Background update check
+    let update_slot: Arc<Mutex<Option<Option<String>>>> = Arc::new(Mutex::new(None));
+    {
+        let slot = Arc::clone(&update_slot);
+        std::thread::spawn(move || {
+            let result = update::check_for_update();
+            *slot.lock().unwrap() = Some(result);
+        });
+    }
+
+    let result = run_app(&mut terminal, &mut app, update_slot);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -105,11 +116,24 @@ fn ensure_config() -> Result<String, Box<dyn std::error::Error>> {
     Ok(dir)
 }
 
-fn run_app(terminal: &mut Term, app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+fn run_app(
+    terminal: &mut Term,
+    app: &mut App,
+    update_slot: Arc<Mutex<Option<Option<String>>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut tick_count: u32 = 0;
     loop {
         // Check for completed async clone
         check_pending_clone(app);
+
+        // Check for update result from background thread
+        if app.update_available.is_none() {
+            if let Ok(mut guard) = update_slot.try_lock() {
+                if let Some(result) = guard.take() {
+                    app.update_available = result;
+                }
+            }
+        }
 
         // Refresh branch labels every ~5 seconds (312 * 16ms)
         tick_count = tick_count.wrapping_add(1);
@@ -278,6 +302,21 @@ fn handle_key(
                         }
                         KeyCode::Char('s') => app.open_settings(),
                         KeyCode::Char('?') => app.open_help(),
+                        KeyCode::Char('u') => {
+                            if let Some(ver) = app.update_available.clone() {
+                                app.status_message = Some(format!("Updating to v{}...", ver));
+                                terminal.draw(|frame| { ui::render(frame, app); })?;
+                                match update::self_update(&ver) {
+                                    Ok(()) => {
+                                        app.status_message = Some(format!("Updated to v{}! Restart to use new version.", ver));
+                                        app.update_available = None;
+                                    }
+                                    Err(e) => {
+                                        app.status_message = Some(e);
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
