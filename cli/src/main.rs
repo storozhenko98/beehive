@@ -11,15 +11,15 @@ use std::time::Duration;
 
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
-        EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyModifiers,
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyModifiers,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::{App, AppMode, CloneResult, ConfirmAction, Focus, InputAction};
+use app::{App, AppMode, CloneResult, ConfirmAction, Focus, InputAction, RefreshResult};
 use config::*;
 
 type Term = Terminal<CrosstermBackend<io::Stdout>>;
@@ -59,8 +59,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app =
-        App::new(beehive_dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let mut app = App::new(beehive_dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     if let Some(warn) = warnings.first() {
         app.status_message = Some(warn.clone());
@@ -138,91 +137,107 @@ fn run_app(
     update_slot: Arc<Mutex<Option<Option<String>>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tick_count: u32 = 0;
+    let mut dirty = true;
+    let mut term_area = ratatui::layout::Rect::default();
+
     loop {
-        // Check for completed async clone
+        // --- Phase 1: Process pending PTY output (no lock contention) ---
+        for term in app.terminals.values_mut() {
+            if term.process_pending_output() {
+                dirty = true;
+            }
+        }
+
+        // --- Phase 2: Background checks ---
         check_pending_clone(app);
 
-        // Check for update result from background thread
+        // Spinner animation while clone is in progress
+        if app.pending_clone.is_some() {
+            dirty = true; // force redraws for spinner animation
+        }
+
         if app.update_available.is_none() {
             if let Ok(mut guard) = update_slot.try_lock() {
                 if let Some(result) = guard.take() {
                     app.update_available = result;
+                    dirty = true;
                 }
             }
         }
 
-        // Refresh branch labels every ~5 seconds (312 * 16ms)
-        tick_count = tick_count.wrapping_add(1);
-        if tick_count % 312 == 0 {
-            app.refresh();
+        // Check for completed background refresh
+        if let Some(slot) = app.pending_refresh.clone() {
+            if let Ok(mut guard) = slot.try_lock() {
+                if let Some(result) = guard.take() {
+                    drop(guard);
+                    app.pending_refresh = None;
+                    app.apply_refresh(result);
+                    dirty = true;
+                }
+            }
         }
 
-        let mut term_area = ratatui::layout::Rect::default();
-        terminal.draw(|frame| {
-            term_area = ui::render(frame, app);
-        })?;
+        // Launch async refresh every ~5 seconds (only if not already running)
+        tick_count = tick_count.wrapping_add(1);
+        if tick_count % 312 == 0 && app.pending_refresh.is_none() {
+            let slot: Arc<Mutex<Option<RefreshResult>>> = Arc::new(Mutex::new(None));
+            let slot_clone = Arc::clone(&slot);
+            let beehive_dir = app.beehive_dir.clone();
+            std::thread::spawn(move || {
+                if let Ok(hives) = list_hives(&beehive_dir) {
+                    let mut hive_data = Vec::new();
+                    for info in hives {
+                        let combs = get_combs(&beehive_dir, &info.dir_name).unwrap_or_default();
+                        hive_data.push((info, combs));
+                    }
+                    if let Ok(mut guard) = slot_clone.lock() {
+                        *guard = Some(RefreshResult { hive_data });
+                    }
+                }
+            });
+            app.pending_refresh = Some(slot);
+        }
 
-        if let Some(t) = app.active_terminal() {
+        // --- Phase 3: Render (only if something changed) ---
+        if dirty {
+            terminal.draw(|frame| {
+                term_area = ui::render(frame, app);
+            })?;
+
+            // Resize PTY if terminal pane dimensions changed
             let new_size = (term_area.width, term_area.height);
             if new_size != app.last_term_size && new_size.0 > 0 && new_size.1 > 0 {
-                t.resize(new_size.1, new_size.0);
+                if let Some(t) = app.active_terminal_mut() {
+                    t.resize(new_size.1, new_size.0);
+                }
                 app.last_term_size = new_size;
             }
+
+            dirty = false;
         }
 
-        if event::poll(Duration::from_millis(16))? {
+        // --- Phase 4: Drain ALL pending input events, then wait up to 16ms ---
+        // Process any already-queued events without blocking first
+        while event::poll(Duration::from_millis(0))? {
             let evt = event::read()?;
-
-            // In terminal focus, forward all events (mouse, paste, focus) directly to PTY
-            if app.focus == Focus::Terminal && matches!(app.mode, AppMode::Normal) {
-                match &evt {
-                    Event::Key(key) => {
-                        // Check escape hatch (Ctrl+Space) first
-                        if is_focus_toggle(key) {
-                            app.focus = Focus::Sidebar;
-                        } else if key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            if let Some(t) = app.active_terminal() {
-                                t.write_input(&[0x03]);
-                            }
-                        } else if let Some(t) = app.active_terminal() {
-                            let bytes =
-                                terminal::event_to_bytes(&evt, t, term_area);
-                            if !bytes.is_empty() {
-                                t.write_input(&bytes);
-                            }
-                        }
-                    }
-                    Event::Mouse(_) | Event::Paste(_) | Event::FocusGained | Event::FocusLost => {
-                        if let Some(t) = app.active_terminal() {
-                            let bytes =
-                                terminal::event_to_bytes(&evt, t, term_area);
-                            if !bytes.is_empty() {
-                                t.write_input(&bytes);
-                            }
-                        }
-                    }
-                    Event::Resize(_, _) => {}
-                }
-            } else {
-                match evt {
-                    Event::Key(key) => {
-                        handle_key(app, key, terminal)?;
-                    }
-                    Event::Paste(text) => {
-                        // Insert pasted text into active input field
-                        if let AppMode::Input { value, .. } = &mut app.mode {
-                            value.push_str(&text);
-                        } else if let AppMode::BranchPicker { filter, selected, .. } = &mut app.mode {
-                            filter.push_str(&text);
-                            *selected = 0;
-                        }
-                    }
-                    _ => {}
-                }
+            dirty = true;
+            process_event(app, &evt, term_area, terminal)?;
+            if app.should_quit {
+                break;
             }
         }
+
+        if app.should_quit {
+            break;
+        }
+
+        // Wait for next event or timeout (yields CPU when idle)
+        if event::poll(Duration::from_millis(16))? {
+            let evt = event::read()?;
+            dirty = true;
+            process_event(app, &evt, term_area, terminal)?;
+        }
+        // PTY output may have arrived during the wait — always re-check at top of loop
 
         if app.should_quit {
             break;
@@ -232,12 +247,70 @@ fn run_app(
     Ok(())
 }
 
+/// Process a single crossterm event, routing to terminal PTY or sidebar handler.
+fn process_event(
+    app: &mut App,
+    evt: &Event,
+    term_area: ratatui::layout::Rect,
+    terminal: &mut Term,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if app.focus == Focus::Terminal && matches!(app.mode, AppMode::Normal) {
+        match evt {
+            Event::Key(key) => {
+                if is_focus_toggle(key) {
+                    app.focus = Focus::Sidebar;
+                } else if key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    if let Some(t) = app.active_terminal() {
+                        t.write_input(&[0x03]);
+                    }
+                } else if let Some(t) = app.active_terminal() {
+                    let bytes = terminal::event_to_bytes(evt, t, term_area);
+                    if !bytes.is_empty() {
+                        t.write_input(&bytes);
+                    }
+                }
+            }
+            Event::Mouse(_) | Event::Paste(_) | Event::FocusGained | Event::FocusLost => {
+                if let Some(t) = app.active_terminal() {
+                    let bytes = terminal::event_to_bytes(evt, t, term_area);
+                    if !bytes.is_empty() {
+                        t.write_input(&bytes);
+                    }
+                }
+            }
+            Event::Resize(_, _) => {}
+        }
+    } else {
+        match evt {
+            Event::Key(key) => {
+                handle_key(app, *key, terminal)?;
+            }
+            Event::Paste(text) => {
+                if let AppMode::Input { value, .. } = &mut app.mode {
+                    value.push_str(text);
+                } else if let AppMode::BranchPicker {
+                    filter, selected, ..
+                } = &mut app.mode
+                {
+                    filter.push_str(text);
+                    *selected = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn check_pending_clone(app: &mut App) {
     if let Some(ref slot) = app.pending_clone {
         let mut guard = slot.lock().unwrap();
         if let Some(result) = guard.take() {
             drop(guard);
             app.pending_clone = None;
+            app.activity = None;
             match result.comb {
                 Ok(comb) => {
                     app.status_message = Some(format!("Created '{}'", result.comb_name));
@@ -298,7 +371,6 @@ fn handle_key(
         _ => {}
     }
 
-
     // Focus toggle: Ctrl+Space to switch to terminal (sidebar → terminal)
     if is_focus_toggle(&key) {
         if app.focus == Focus::Sidebar && app.active_terminal().is_some() {
@@ -312,91 +384,94 @@ fn handle_key(
             // Terminal focus with non-Normal mode (overlay showing) — ignore keys
             // (the overlay-specific handlers above already returned for Help/Settings/BranchPicker)
         }
-        Focus::Sidebar => {
-            match &app.mode {
-                AppMode::Normal => {
-                    app.status_message = None;
-                    match key.code {
-                        KeyCode::Char('q') => app.start_quit(),
-                        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                        KeyCode::Enter | KeyCode::Char('l') => {
-                            if let Some((id, path)) = app.enter_selected() {
-                                if Path::new(&path).exists() {
-                                    app.open_terminal(&id, &path);
-                                } else {
-                                    app.status_message = Some("Dir not found".to_string());
-                                }
+        Focus::Sidebar => match &app.mode {
+            AppMode::Normal => {
+                app.status_message = None;
+                match key.code {
+                    KeyCode::Char('q') => app.start_quit(),
+                    KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                    KeyCode::Enter | KeyCode::Char('l') => {
+                        if let Some((id, path)) = app.enter_selected() {
+                            if Path::new(&path).exists() {
+                                app.open_terminal(&id, &path);
+                            } else {
+                                app.status_message = Some("Dir not found".to_string());
                             }
                         }
-                        KeyCode::Char('n') => app.start_new_comb(),
-                        KeyCode::Char('c') => app.start_copy_comb(),
-                        KeyCode::Char('a') => app.start_add_hive(),
-                        KeyCode::Char('d') => app.start_delete(),
-                        KeyCode::Char('r') => {
-                            app.refresh();
-                            app.status_message = Some("Refreshed".to_string());
-                        }
-                        KeyCode::Char('s') => app.open_settings(),
-                        KeyCode::Char('?') => app.open_help(),
-                        KeyCode::Char('<') | KeyCode::Char('H') => {
-                            if app.sidebar_width > 20 {
-                                app.sidebar_width -= 2;
-                                app.save_sidebar_width();
-                            }
-                        }
-                        KeyCode::Char('>') | KeyCode::Char('L') => {
-                            app.sidebar_width += 2;
+                    }
+                    KeyCode::Char('n') => app.start_new_comb(),
+                    KeyCode::Char('c') => app.start_copy_comb(),
+                    KeyCode::Char('a') => app.start_add_hive(),
+                    KeyCode::Char('d') => app.start_delete(),
+                    KeyCode::Char('r') => {
+                        app.refresh();
+                        app.status_message = Some("Refreshed".to_string());
+                    }
+                    KeyCode::Char('s') => app.open_settings(),
+                    KeyCode::Char('?') => app.open_help(),
+                    KeyCode::Char('<') | KeyCode::Char('H') => {
+                        if app.sidebar_width > 20 {
+                            app.sidebar_width -= 2;
                             app.save_sidebar_width();
                         }
-                        KeyCode::Char('u') => {
-                            if let Some(ver) = app.update_available.clone() {
-                                app.status_message = Some(format!("Updating to v{}...", ver));
-                                terminal.draw(|frame| { ui::render(frame, app); })?;
-                                match update::self_update(&ver) {
-                                    Ok(()) => {
-                                        app.status_message = Some(format!("Updated to v{}! Restart to use new version.", ver));
-                                        app.update_available = None;
-                                    }
-                                    Err(e) => {
-                                        app.status_message = Some(e);
-                                    }
+                    }
+                    KeyCode::Char('>') | KeyCode::Char('L') => {
+                        app.sidebar_width += 2;
+                        app.save_sidebar_width();
+                    }
+                    KeyCode::Char('u') => {
+                        if let Some(ver) = app.update_available.clone() {
+                            app.status_message = Some(format!("Updating to v{}...", ver));
+                            terminal.draw(|frame| {
+                                ui::render(frame, app);
+                            })?;
+                            match update::self_update(&ver) {
+                                Ok(()) => {
+                                    app.status_message = Some(format!(
+                                        "Updated to v{}! Restart to use new version.",
+                                        ver
+                                    ));
+                                    app.update_available = None;
+                                }
+                                Err(e) => {
+                                    app.status_message = Some(e);
                                 }
                             }
-                        }
-                        _ => {}
-                    }
-                }
-                AppMode::Input { .. } => match key.code {
-                    KeyCode::Esc => {
-                        app.mode = AppMode::Normal;
-                    }
-                    KeyCode::Enter => {
-                        handle_input_submit(app, terminal)?;
-                    }
-                    KeyCode::Char(c) => {
-                        if let AppMode::Input { value, .. } = &mut app.mode {
-                            value.push(c);
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        if let AppMode::Input { value, .. } = &mut app.mode {
-                            value.pop();
                         }
                     }
                     _ => {}
-                },
-                AppMode::Confirm { .. } => match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        handle_confirm(app)?;
-                    }
-                    _ => {
-                        app.mode = AppMode::Normal;
-                    }
-                },
-                AppMode::Help | AppMode::Settings { .. } | AppMode::BranchPicker { .. } => {}
+                }
             }
-        }
+            AppMode::Input { .. } => match key.code {
+                KeyCode::Esc => {
+                    app.mode = AppMode::Normal;
+                }
+                KeyCode::Enter => {
+                    handle_input_submit(app, terminal)?;
+                }
+                KeyCode::Char(c) => {
+                    if let AppMode::Input { value, .. } = &mut app.mode {
+                        value.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let AppMode::Input { value, .. } = &mut app.mode {
+                        value.pop();
+                    }
+                }
+                _ => {}
+            },
+            AppMode::Confirm { .. } => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    handle_confirm(app)?;
+                }
+                _ => {
+                    app.mode = AppMode::Normal;
+                }
+            },
+            AppMode::Help | AppMode::Settings { .. } | AppMode::BranchPicker { .. } => {}
+        },
     }
     Ok(())
 }
@@ -411,8 +486,17 @@ fn handle_branch_picker(
             app.mode = AppMode::Normal;
         }
         KeyCode::Up => {
-            if let AppMode::BranchPicker { selected, filter, branches, .. } = &mut app.mode {
-                let filtered_count = branches.iter().filter(|b| b.contains(filter.as_str())).count();
+            if let AppMode::BranchPicker {
+                selected,
+                filter,
+                branches,
+                ..
+            } = &mut app.mode
+            {
+                let filtered_count = branches
+                    .iter()
+                    .filter(|b| b.contains(filter.as_str()))
+                    .count();
                 if *selected > 0 {
                     *selected -= 1;
                 } else if filtered_count > 0 {
@@ -421,8 +505,17 @@ fn handle_branch_picker(
             }
         }
         KeyCode::Down => {
-            if let AppMode::BranchPicker { selected, filter, branches, .. } = &mut app.mode {
-                let filtered_count = branches.iter().filter(|b| b.contains(filter.as_str())).count();
+            if let AppMode::BranchPicker {
+                selected,
+                filter,
+                branches,
+                ..
+            } = &mut app.mode
+            {
+                let filtered_count = branches
+                    .iter()
+                    .filter(|b| b.contains(filter.as_str()))
+                    .count();
                 if *selected + 1 < filtered_count {
                     *selected += 1;
                 }
@@ -440,24 +533,38 @@ fn handle_branch_picker(
                 selected,
             } = mode
             {
-                let filtered: Vec<&String> = branches.iter().filter(|b| b.contains(&filter)).collect();
+                let filtered: Vec<&String> =
+                    branches.iter().filter(|b| b.contains(&filter)).collect();
                 let branch = if filtered.is_empty() {
-                    if filter.is_empty() { default_branch } else { filter }
+                    if filter.is_empty() {
+                        default_branch
+                    } else {
+                        filter
+                    }
                 } else {
-                    filtered.get(selected).map(|s| s.to_string()).unwrap_or(default_branch)
+                    filtered
+                        .get(selected)
+                        .map(|s| s.to_string())
+                        .unwrap_or(default_branch)
                 };
 
                 start_async_clone(app, terminal, hive_dir_name, comb_name, branch)?;
             }
         }
         KeyCode::Char(c) => {
-            if let AppMode::BranchPicker { filter, selected, .. } = &mut app.mode {
+            if let AppMode::BranchPicker {
+                filter, selected, ..
+            } = &mut app.mode
+            {
                 filter.push(c);
                 *selected = 0;
             }
         }
         KeyCode::Backspace => {
-            if let AppMode::BranchPicker { filter, selected, .. } = &mut app.mode {
+            if let AppMode::BranchPicker {
+                filter, selected, ..
+            } = &mut app.mode
+            {
                 filter.pop();
                 *selected = 0;
             }
@@ -490,7 +597,13 @@ fn start_async_clone(
     let branch_clone = branch.clone();
 
     std::thread::spawn(move || {
-        let result = create_comb_sync(&beehive_dir, &hive_dir_clone, &comb_name_clone, &branch_clone, &state);
+        let result = create_comb_sync(
+            &beehive_dir,
+            &hive_dir_clone,
+            &comb_name_clone,
+            &branch_clone,
+            &state,
+        );
         let mut guard = slot_clone.lock().unwrap();
         *guard = Some(CloneResult {
             comb: result,
@@ -500,6 +613,7 @@ fn start_async_clone(
     });
 
     app.pending_clone = Some(slot);
+    app.activity = Some(format!("Cloning '{}'", comb_name));
     Ok(())
 }
 
@@ -509,10 +623,7 @@ fn handle_input_submit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::mem::replace(&mut app.mode, AppMode::Normal);
 
-    if let AppMode::Input {
-        value, action, ..
-    } = mode
-    {
+    if let AppMode::Input { value, action, .. } = mode {
         match action {
             InputAction::NewCombName { hive_dir_name } => {
                 let state = load_hive_state(&app.beehive_dir, &hive_dir_name)
@@ -546,7 +657,8 @@ fn handle_input_submit(
                             .info
                             .default_branch
                             .unwrap_or_else(|| "main".to_string());
-                        app.status_message = Some("Could not fetch branches, type manually".to_string());
+                        app.status_message =
+                            Some("Could not fetch branches, type manually".to_string());
                         app.mode = AppMode::Input {
                             prompt: format!("Branch [{}]", default_branch),
                             value: String::new(),
@@ -639,16 +751,14 @@ fn handle_confirm(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 app.remove_hive_terminals(&dir_name);
                 app.refresh();
             }
-            ConfirmAction::ResetConfig => {
-                match reset_config() {
-                    Ok(()) => {
-                        app.status_message = Some("Config reset. Restart to reconfigure.".to_string());
-                    }
-                    Err(e) => {
-                        app.status_message = Some(format!("Reset failed: {}", e));
-                    }
+            ConfirmAction::ResetConfig => match reset_config() {
+                Ok(()) => {
+                    app.status_message = Some("Config reset. Restart to reconfigure.".to_string());
                 }
-            }
+                Err(e) => {
+                    app.status_message = Some(format!("Reset failed: {}", e));
+                }
+            },
             ConfirmAction::Quit => {
                 app.should_quit = true;
             }
@@ -727,7 +837,10 @@ fn add_hive(beehive_dir: &str, url: &str) -> Result<String, String> {
     let json_output = run_cmd(
         "gh",
         &[
-            "repo", "view", &repo_spec, "--json",
+            "repo",
+            "view",
+            &repo_spec,
+            "--json",
             "name,owner,description,defaultBranchRef,sshUrl,url",
         ],
     )?;

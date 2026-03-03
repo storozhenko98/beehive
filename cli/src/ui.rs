@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // header
-            Constraint::Min(1),   // content
+            Constraint::Min(1),    // content
             Constraint::Length(1), // footer
         ])
         .split(frame.area());
@@ -48,10 +48,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
     let sidebar_width = app.sidebar_width.min(frame.area().width / 2).max(20);
     let horiz = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(sidebar_width),
-            Constraint::Min(1),
-        ])
+        .constraints([Constraint::Length(sidebar_width), Constraint::Min(1)])
         .split(vert[1]);
 
     render_sidebar(frame, app, horiz[0]);
@@ -59,9 +56,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
 
     // Overlays
     match &app.mode {
-        AppMode::Input {
-            prompt, value, ..
-        } => render_input(frame, prompt, value),
+        AppMode::Input { prompt, value, .. } => render_input(frame, prompt, value),
         AppMode::Confirm { message, .. } => render_confirm(frame, message),
         AppMode::Help => render_help(frame),
         AppMode::Settings { preflight } => render_settings(frame, app, preflight),
@@ -72,7 +67,14 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
             selected,
             comb_name,
             ..
-        } => render_branch_picker(frame, branches, default_branch, filter, *selected, comb_name),
+        } => render_branch_picker(
+            frame,
+            branches,
+            default_branch,
+            filter,
+            *selected,
+            comb_name,
+        ),
         AppMode::Normal => {}
     }
 
@@ -80,12 +82,10 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![
+    let mut left_spans = vec![
         Span::styled(
             " beehive",
-            Style::default()
-                .fg(MAUVE)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(" v{}", env!("CARGO_PKG_VERSION")),
@@ -94,15 +94,32 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     ];
 
     if let Some(ver) = &app.update_available {
-        spans.push(Span::styled(
+        left_spans.push(Span::styled(
             format!("  v{} available — 'u' to update", ver),
             Style::default().fg(GREEN),
         ));
     }
 
-    let header = Paragraph::new(Line::from(spans))
+    let left = Paragraph::new(Line::from(left_spans)).style(Style::default().bg(MANTLE));
+    frame.render_widget(left, area);
+
+    // Activity spinner (right-aligned in header) — persistent across mode changes
+    if let Some(ref msg) = app.activity {
+        const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let frame_char = SPINNER[(ms / 80) as usize % SPINNER.len()];
+        let activity_text = format!("{} {} ", frame_char, msg);
+        let right = Paragraph::new(Line::from(Span::styled(
+            activity_text,
+            Style::default().fg(YELLOW),
+        )))
+        .alignment(Alignment::Right)
         .style(Style::default().bg(MANTLE));
-    frame.render_widget(header, area);
+        frame.render_widget(right, area);
+    }
 }
 
 fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
@@ -179,10 +196,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                 ListItem::new(Line::from(vec![
                     Span::styled(format!("   {}", marker), Style::default().fg(marker_color)),
                     Span::styled(comb.name.clone(), Style::default().fg(name_color)),
-                    Span::styled(
-                        format!(" {}", comb.branch),
-                        Style::default().fg(SURFACE1),
-                    ),
+                    Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
                 ]))
             }
         })
@@ -195,11 +209,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items)
         .style(Style::default().bg(MANTLE))
-        .highlight_style(
-            Style::default()
-                .bg(SURFACE0)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(Style::default().bg(SURFACE0).add_modifier(Modifier::BOLD));
 
     frame.render_stateful_widget(list, inner, &mut state);
 }
@@ -210,8 +220,7 @@ fn render_terminal_pane(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     let focused = app.focus == Focus::Terminal;
 
     if !has_terminal {
-        let block = Block::default()
-            .style(Style::default().bg(BASE));
+        let block = Block::default().style(Style::default().bg(BASE));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -240,7 +249,7 @@ fn render_terminal_pane(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // title bar
-            Constraint::Min(1),   // terminal content
+            Constraint::Min(1),    // terminal content
         ])
         .split(area);
 
@@ -259,15 +268,16 @@ fn render_terminal_pane(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         ),
         Span::styled(
             if focused { " ● " } else { " ○ " },
-            Style::default().fg(if focused { GREEN } else { OVERLAY0 }).bg(title_bg),
+            Style::default()
+                .fg(if focused { GREEN } else { OVERLAY0 })
+                .bg(title_bg),
         ),
     ]))
     .style(Style::default().bg(title_bg));
     frame.render_widget(title_bar, term_layout[0]);
 
     // Terminal content
-    let block = Block::default()
-        .style(Style::default().bg(Color::Reset));
+    let block = Block::default().style(Style::default().bg(Color::Reset));
     let inner = block.inner(term_layout[1]);
     frame.render_widget(block, term_layout[1]);
 
@@ -283,91 +293,140 @@ fn render_terminal_pane(frame: &mut Frame, app: &App, area: Rect) -> Rect {
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let content = if let Some(msg) = &app.status_message {
-        Line::from(Span::styled(format!(" {}", msg), Style::default().fg(YELLOW)))
+        Line::from(Span::styled(
+            format!(" {}", msg),
+            Style::default().fg(YELLOW),
+        ))
     } else {
         match &app.mode {
-            AppMode::Help => {
-                Line::from(vec![
-                    Span::styled(" Esc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                    Span::styled(" close", Style::default().fg(OVERLAY0)),
-                ])
-            }
-            AppMode::Settings { .. } => {
-                Line::from(vec![
-                    Span::styled(" Esc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                    Span::styled(" close ", Style::default().fg(OVERLAY0)),
-                    Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" R", Style::default().fg(RED).add_modifier(Modifier::BOLD)),
-                    Span::styled(" reset config", Style::default().fg(OVERLAY0)),
-                ])
-            }
-            AppMode::BranchPicker { .. } => {
-                Line::from(vec![
-                    Span::styled(" ↑↓", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                    Span::styled(" navigate ", Style::default().fg(OVERLAY0)),
-                    Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" enter", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                    Span::styled(" select ", Style::default().fg(OVERLAY0)),
-                    Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" type", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                    Span::styled(" to filter ", Style::default().fg(OVERLAY0)),
-                    Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" Esc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                    Span::styled(" cancel", Style::default().fg(OVERLAY0)),
-                ])
-            }
-            _ if app.focus == Focus::Terminal => {
-                Line::from(vec![
-                    Span::styled(" Ctrl+Space", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
-                    Span::styled(" sidebar", Style::default().fg(OVERLAY0)),
-                ])
-            }
+            AppMode::Help => Line::from(vec![
+                Span::styled(
+                    " Esc",
+                    Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" close", Style::default().fg(OVERLAY0)),
+            ]),
+            AppMode::Settings { .. } => Line::from(vec![
+                Span::styled(
+                    " Esc",
+                    Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" close ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(" R", Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+                Span::styled(" reset config", Style::default().fg(OVERLAY0)),
+            ]),
+            AppMode::BranchPicker { .. } => Line::from(vec![
+                Span::styled(
+                    " ↑↓",
+                    Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" navigate ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " enter",
+                    Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" select ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " type",
+                    Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to filter ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " Esc",
+                    Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" cancel", Style::default().fg(OVERLAY0)),
+            ]),
+            _ if app.focus == Focus::Terminal => Line::from(vec![
+                Span::styled(
+                    " Ctrl+Space",
+                    Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" sidebar", Style::default().fg(OVERLAY0)),
+            ]),
             _ => {
                 let mut spans = vec![
-                    Span::styled(" enter", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " enter",
+                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" open ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
                 ];
                 if !app.items.is_empty() {
                     spans.extend([
-                        Span::styled(" n", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            " n",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" new ", Style::default().fg(OVERLAY0)),
                         Span::styled("│", Style::default().fg(SURFACE1)),
-                        Span::styled(" c", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            " c",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" copy ", Style::default().fg(OVERLAY0)),
                         Span::styled("│", Style::default().fg(SURFACE1)),
                     ]);
                 }
                 spans.extend([
-                    Span::styled(" a", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " a",
+                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" add ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" d", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " d",
+                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" del ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" s", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " s",
+                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" settings ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" </>", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " </>",
+                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" resize ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" ?", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " ?",
+                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" help ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
-                    Span::styled(" q", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " q",
+                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(" quit", Style::default().fg(OVERLAY0)),
                 ]);
                 if app.active_terminal().is_some() {
                     spans.extend([
                         Span::styled(" │", Style::default().fg(SURFACE1)),
-                        Span::styled(" C-Spc", Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            " C-Spc",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" terminal", Style::default().fg(OVERLAY0)),
                     ]);
                 }
                 if app.update_available.is_some() {
                     spans.extend([
                         Span::styled(" │", Style::default().fg(SURFACE1)),
-                        Span::styled(" u", Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            " u",
+                            Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(" update", Style::default().fg(OVERLAY0)),
                     ]);
                 }
@@ -402,24 +461,66 @@ fn render_help(frame: &mut Frame) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled("  Concepts", header_style)),
-        Line::from(Span::styled("  Hive = a GitHub repo you work on", dim_style)),
-        Line::from(Span::styled("  Comb = an isolated git clone / workspace", dim_style)),
+        Line::from(Span::styled(
+            "  Hive = a GitHub repo you work on",
+            dim_style,
+        )),
+        Line::from(Span::styled(
+            "  Comb = an isolated git clone / workspace",
+            dim_style,
+        )),
         Line::from(""),
         Line::from(Span::styled("  Sidebar", header_style)),
-        Line::from(vec![Span::styled("  enter    ", key_style), Span::styled("Open comb / toggle hive", desc_style)]),
-        Line::from(vec![Span::styled("  j/k      ", key_style), Span::styled("Move up/down", desc_style)]),
-        Line::from(vec![Span::styled("  n        ", key_style), Span::styled("New comb (clone + branch)", desc_style)]),
-        Line::from(vec![Span::styled("  c        ", key_style), Span::styled("Copy comb (duplicate workspace)", desc_style)]),
-        Line::from(vec![Span::styled("  a        ", key_style), Span::styled("Add hive (GitHub repo)", desc_style)]),
-        Line::from(vec![Span::styled("  d        ", key_style), Span::styled("Delete selected comb or hive", desc_style)]),
-        Line::from(vec![Span::styled("  </>/H/L  ", key_style), Span::styled("Resize sidebar", desc_style)]),
-        Line::from(vec![Span::styled("  r        ", key_style), Span::styled("Refresh sidebar", desc_style)]),
-        Line::from(vec![Span::styled("  s        ", key_style), Span::styled("Settings", desc_style)]),
-        Line::from(vec![Span::styled("  q        ", key_style), Span::styled("Quit", desc_style)]),
+        Line::from(vec![
+            Span::styled("  enter    ", key_style),
+            Span::styled("Open comb / toggle hive", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  j/k      ", key_style),
+            Span::styled("Move up/down", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  n        ", key_style),
+            Span::styled("New comb (clone + branch)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  c        ", key_style),
+            Span::styled("Copy comb (duplicate workspace)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  a        ", key_style),
+            Span::styled("Add hive (GitHub repo)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  d        ", key_style),
+            Span::styled("Delete selected comb or hive", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  </>/H/L  ", key_style),
+            Span::styled("Resize sidebar", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  r        ", key_style),
+            Span::styled("Refresh sidebar", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  s        ", key_style),
+            Span::styled("Settings", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  q        ", key_style),
+            Span::styled("Quit", desc_style),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Global", header_style)),
-        Line::from(vec![Span::styled("  C-Space  ", key_style), Span::styled("Toggle sidebar / terminal focus", desc_style)]),
-        Line::from(vec![Span::styled("  Ctrl+C   ", key_style), Span::styled("Send interrupt (terminal) / quit (sidebar)", desc_style)]),
+        Line::from(vec![
+            Span::styled("  C-Space  ", key_style),
+            Span::styled("Toggle sidebar / terminal focus", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+C   ", key_style),
+            Span::styled("Send interrupt (terminal) / quit (sidebar)", desc_style),
+        ]),
     ];
 
     let paragraph = Paragraph::new(lines)
@@ -483,7 +584,12 @@ fn render_branch_picker(
         count_area,
     );
 
-    let items_area = Rect::new(list_area.x, list_area.y + 1, list_area.width, list_area.height.saturating_sub(1));
+    let items_area = Rect::new(
+        list_area.x,
+        list_area.y + 1,
+        list_area.width,
+        list_area.height.saturating_sub(1),
+    );
 
     let items: Vec<ListItem> = filtered
         .iter()
@@ -494,10 +600,7 @@ fn render_branch_picker(
                 Style::default().fg(TEXT),
             )];
             if is_default {
-                spans.push(Span::styled(
-                    " (default)",
-                    Style::default().fg(GREEN),
-                ));
+                spans.push(Span::styled(" (default)", Style::default().fg(GREEN)));
             }
             ListItem::new(Line::from(spans))
         })
@@ -536,26 +639,66 @@ fn render_settings(frame: &mut Frame, app: &App, pf: &crate::config::PreflightRe
     let value_style = Style::default().fg(TEXT);
     let header_style = Style::default().fg(PEACH).add_modifier(Modifier::BOLD);
 
-    let ok = Span::styled("OK", Style::default().fg(GREEN).add_modifier(Modifier::BOLD));
-    let missing = Span::styled("missing", Style::default().fg(RED).add_modifier(Modifier::BOLD));
-    let not_auth = Span::styled("not authenticated", Style::default().fg(YELLOW).add_modifier(Modifier::BOLD));
+    let ok = Span::styled(
+        "OK",
+        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+    );
+    let missing = Span::styled(
+        "missing",
+        Style::default().fg(RED).add_modifier(Modifier::BOLD),
+    );
+    let not_auth = Span::styled(
+        "not authenticated",
+        Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
+    );
 
-    let git_status = if pf.git.is_some() { ok.clone() } else { missing.clone() };
-    let gh_status = if pf.gh.is_some() { ok.clone() } else { missing.clone() };
-    let auth_status = if pf.gh_auth { ok } else if pf.gh.is_some() { not_auth } else { missing };
+    let git_status = if pf.git.is_some() {
+        ok.clone()
+    } else {
+        missing.clone()
+    };
+    let gh_status = if pf.gh.is_some() {
+        ok.clone()
+    } else {
+        missing.clone()
+    };
+    let auth_status = if pf.gh_auth {
+        ok
+    } else if pf.gh.is_some() {
+        not_auth
+    } else {
+        missing
+    };
 
-    let config_path = crate::config::app_config_path().to_string_lossy().to_string();
+    let config_path = crate::config::app_config_path()
+        .to_string_lossy()
+        .to_string();
 
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled("  Paths", header_style)),
-        Line::from(vec![Span::styled("  Beehive dir  ", label_style), Span::styled(&app.beehive_dir, value_style)]),
-        Line::from(vec![Span::styled("  Config file  ", label_style), Span::styled(config_path, value_style)]),
+        Line::from(vec![
+            Span::styled("  Beehive dir  ", label_style),
+            Span::styled(&app.beehive_dir, value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Config file  ", label_style),
+            Span::styled(config_path, value_style),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Dependencies", header_style)),
-        Line::from(vec![Span::styled("  git          ", label_style), git_status]),
-        Line::from(vec![Span::styled("  gh CLI       ", label_style), gh_status]),
-        Line::from(vec![Span::styled("  gh auth      ", label_style), auth_status]),
+        Line::from(vec![
+            Span::styled("  git          ", label_style),
+            git_status,
+        ]),
+        Line::from(vec![
+            Span::styled("  gh CLI       ", label_style),
+            gh_status,
+        ]),
+        Line::from(vec![
+            Span::styled("  gh auth      ", label_style),
+            auth_status,
+        ]),
         Line::from(""),
         Line::from(Span::styled("  Sessions", header_style)),
         Line::from(vec![
@@ -608,8 +751,7 @@ impl<'a> Widget for Vt100Widget<'a> {
                         if cell.inverse() {
                             modifier |= Modifier::REVERSED;
                         }
-                        buf_cell
-                            .set_style(buf_cell.style().add_modifier(modifier));
+                        buf_cell.set_style(buf_cell.style().add_modifier(modifier));
                     }
                 }
             }
@@ -620,9 +762,7 @@ impl<'a> Widget for Vt100Widget<'a> {
             let (crow, ccol) = self.screen.cursor_position();
             if crow < area.height && ccol < area.width {
                 if let Some(cursor_cell) = buf.cell_mut((area.x + ccol, area.y + crow)) {
-                    cursor_cell.set_style(
-                        cursor_cell.style().add_modifier(Modifier::REVERSED),
-                    );
+                    cursor_cell.set_style(cursor_cell.style().add_modifier(Modifier::REVERSED));
                 }
             }
         }
@@ -656,7 +796,9 @@ fn convert_color(c: vt100::Color) -> Color {
 }
 
 fn render_input(frame: &mut Frame, prompt: &str, value: &str) {
-    let w = (frame.area().width / 2).max(30).min(frame.area().width.saturating_sub(2));
+    let w = (frame.area().width / 2)
+        .max(30)
+        .min(frame.area().width.saturating_sub(2));
     let area = centered_rect(w, 3, frame.area());
     frame.render_widget(Clear, area);
 
@@ -677,7 +819,9 @@ fn render_input(frame: &mut Frame, prompt: &str, value: &str) {
 }
 
 fn render_confirm(frame: &mut Frame, message: &str) {
-    let w = (frame.area().width / 2).max(30).min(frame.area().width.saturating_sub(2));
+    let w = (frame.area().width / 2)
+        .max(30)
+        .min(frame.area().width.saturating_sub(2));
     let area = centered_rect(w, 3, frame.area());
     frame.render_widget(Clear, area);
 

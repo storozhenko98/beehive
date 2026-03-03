@@ -57,7 +57,9 @@ pub enum AppMode {
 }
 
 pub enum InputAction {
-    NewCombName { hive_dir_name: String },
+    NewCombName {
+        hive_dir_name: String,
+    },
     AddHiveUrl,
     CopyCombName {
         hive_dir_name: String,
@@ -81,6 +83,11 @@ pub enum ConfirmAction {
     Quit,
 }
 
+/// Raw data from a background refresh (list_hives + get_combs for each).
+pub struct RefreshResult {
+    pub hive_data: Vec<(HiveInfo, Vec<Comb>)>,
+}
+
 pub struct App {
     pub beehive_dir: String,
     pub items: Vec<NavItem>,
@@ -93,6 +100,9 @@ pub struct App {
     pub terminals: HashMap<String, EmbeddedTerminal>,
     pub last_term_size: (u16, u16),
     pub pending_clone: Option<Arc<Mutex<Option<CloneResult>>>>,
+    pub pending_refresh: Option<Arc<Mutex<Option<RefreshResult>>>>,
+    /// Persistent activity message shown in header (e.g. "Cloning 'foo'...")
+    pub activity: Option<String>,
     pub update_available: Option<String>,
     pub sidebar_width: u16,
 }
@@ -112,6 +122,8 @@ impl App {
             terminals: HashMap::new(),
             last_term_size: (0, 0),
             pending_clone: None,
+            pending_refresh: None,
+            activity: None,
             update_available: None,
             sidebar_width: config.sidebar_width,
         };
@@ -172,6 +184,45 @@ impl App {
 
     pub fn refresh(&mut self) {
         let _ = self.load_all(false);
+    }
+
+    /// Apply the result of a background refresh to update sidebar items
+    /// without blocking the main thread.
+    pub fn apply_refresh(&mut self, result: RefreshResult) {
+        let mut items = vec![];
+
+        for (info, combs) in result.hive_data {
+            let dir_name = info.dir_name.clone();
+            let was_expanded = self.items.iter().any(|item| {
+                matches!(item, NavItem::Hive { info: h, expanded: true, .. } if h.dir_name == dir_name)
+            });
+
+            let live_combs: Vec<Comb> = combs.into_iter().filter(|c| !c.cloning).collect();
+            let comb_count = live_combs.len();
+
+            items.push(NavItem::Hive {
+                info: info.clone(),
+                expanded: was_expanded,
+                comb_count,
+            });
+
+            if was_expanded {
+                for comb in live_combs {
+                    items.push(NavItem::Comb {
+                        hive_dir_name: dir_name.clone(),
+                        comb,
+                    });
+                }
+            }
+        }
+
+        if self.selected >= items.len() && !items.is_empty() {
+            self.selected = items.len() - 1;
+        }
+        if items.is_empty() {
+            self.selected = 0;
+        }
+        self.items = items;
     }
 
     pub fn move_up(&mut self) {
@@ -273,6 +324,12 @@ impl App {
         self.active_comb_id
             .as_ref()
             .and_then(|id| self.terminals.get(id))
+    }
+
+    pub fn active_terminal_mut(&mut self) -> Option<&mut EmbeddedTerminal> {
+        self.active_comb_id
+            .as_ref()
+            .and_then(|id| self.terminals.get_mut(id))
     }
 
     pub fn active_comb_name(&self) -> Option<String> {

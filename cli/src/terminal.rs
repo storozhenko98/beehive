@@ -1,17 +1,38 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex};
 
 use crate::config::full_path;
 
+/// Detect DECSET 1004 (focus reporting) requests in the PTY output stream.
+/// Scans for \x1b[?1004h (enable) and \x1b[?1004l (disable).
+fn detect_focus_reporting(data: &[u8], flag: &AtomicBool) {
+    let enable = b"\x1b[?1004h";
+    let disable = b"\x1b[?1004l";
+    if data.len() >= enable.len() {
+        if data.windows(enable.len()).any(|w| w == enable) {
+            flag.store(true, Ordering::SeqCst);
+        }
+        if data.windows(disable.len()).any(|w| w == disable) {
+            flag.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 pub struct EmbeddedTerminal {
-    parser: Arc<RwLock<vt100::Parser>>,
+    /// vt100 parser — owned exclusively by the main thread (no locks needed).
+    /// Background reader sends raw bytes via `output_rx` channel instead.
+    parser: vt100::Parser,
+    /// Channel receiving raw PTY output from the background reader thread.
+    output_rx: mpsc::Receiver<Vec<u8>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     _child: Box<dyn portable_pty::Child + Send + Sync>,
     #[allow(dead_code)]
     alive: Arc<AtomicBool>,
+    /// Whether the inner app requested focus reporting (DECSET 1004).
+    focus_reporting: Arc<AtomicBool>,
 }
 
 impl EmbeddedTerminal {
@@ -50,16 +71,19 @@ impl EmbeddedTerminal {
             .try_clone_reader()
             .map_err(|e| format!("Failed to clone reader: {}", e))?;
 
-        let parser = Arc::new(RwLock::new(vt100::Parser::new(rows, cols, 1000)));
+        let parser = vt100::Parser::new(rows, cols, 1000);
         let alive = Arc::new(AtomicBool::new(true));
+        let focus_reporting = Arc::new(AtomicBool::new(false));
         let master = Arc::new(Mutex::new(pair.master));
         let writer = Arc::new(Mutex::new(writer));
 
-        // Background reader: PTY output -> vt100 parser + OSC 52 clipboard detection
-        let parser_clone = Arc::clone(&parser);
+        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>();
+
+        // Background reader: PTY output → channel + OSC 52 clipboard + focus detect
         let alive_clone = Arc::clone(&alive);
+        let focus_clone = Arc::clone(&focus_reporting);
         std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
+            let mut buf = [0u8; 16384];
             let mut osc52 = Osc52Detector::new();
             loop {
                 match reader.read(&mut buf) {
@@ -67,8 +91,9 @@ impl EmbeddedTerminal {
                     Ok(n) => {
                         let data = &buf[..n];
                         osc52.process(data);
-                        if let Ok(mut p) = parser_clone.write() {
-                            p.process(data);
+                        detect_focus_reporting(data, &focus_clone);
+                        if output_tx.send(data.to_vec()).is_err() {
+                            break; // receiver dropped
                         }
                     }
                     Err(_) => break,
@@ -79,30 +104,41 @@ impl EmbeddedTerminal {
 
         Ok(Self {
             parser,
+            output_rx,
             writer,
             master,
             _child: child,
             alive,
+            focus_reporting,
         })
+    }
+
+    /// Drain all pending PTY output from the channel and feed it to the parser.
+    /// Call this on the main thread before rendering. Returns true if any output
+    /// was processed (i.e. the screen may have changed).
+    pub fn process_pending_output(&mut self) -> bool {
+        let mut got_data = false;
+        while let Ok(data) = self.output_rx.try_recv() {
+            self.parser.process(&data);
+            got_data = true;
+        }
+        got_data
     }
 
     pub fn with_screen<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&vt100::Screen) -> R,
     {
-        let guard = self.parser.read().unwrap();
-        f(guard.screen())
+        f(self.parser.screen())
     }
 
     pub fn write_input(&self, data: &[u8]) {
         if let Ok(mut w) = self.writer.lock() {
             let _ = w.write_all(data);
-            // No flush needed — PTY master fds are unbuffered at the OS level.
-            // Data is immediately available to the slave process after write().
         }
     }
 
-    pub fn resize(&self, rows: u16, cols: u16) {
+    pub fn resize(&mut self, rows: u16, cols: u16) {
         if rows == 0 || cols == 0 {
             return;
         }
@@ -114,9 +150,7 @@ impl EmbeddedTerminal {
                 pixel_height: 0,
             });
         }
-        if let Ok(mut p) = self.parser.write() {
-            p.set_size(rows, cols);
-        }
+        self.parser.set_size(rows, cols);
     }
 
     #[allow(dead_code)]
@@ -124,32 +158,25 @@ impl EmbeddedTerminal {
         self.alive.load(Ordering::SeqCst)
     }
 
+    /// Whether the inner application requested focus reporting via DECSET 1004.
+    pub fn focus_reporting(&self) -> bool {
+        self.focus_reporting.load(Ordering::SeqCst)
+    }
+
     pub fn application_cursor(&self) -> bool {
-        self.parser
-            .read()
-            .map(|p| p.screen().application_cursor())
-            .unwrap_or(false)
+        self.parser.screen().application_cursor()
     }
 
     pub fn mouse_protocol_mode(&self) -> vt100::MouseProtocolMode {
-        self.parser
-            .read()
-            .map(|p| p.screen().mouse_protocol_mode())
-            .unwrap_or(vt100::MouseProtocolMode::None)
+        self.parser.screen().mouse_protocol_mode()
     }
 
     pub fn mouse_protocol_encoding(&self) -> vt100::MouseProtocolEncoding {
-        self.parser
-            .read()
-            .map(|p| p.screen().mouse_protocol_encoding())
-            .unwrap_or(vt100::MouseProtocolEncoding::Default)
+        self.parser.screen().mouse_protocol_encoding()
     }
 
     pub fn bracketed_paste(&self) -> bool {
-        self.parser
-            .read()
-            .map(|p| p.screen().bracketed_paste())
-            .unwrap_or(false)
+        self.parser.screen().bracketed_paste()
     }
 }
 
@@ -473,8 +500,20 @@ pub fn event_to_bytes(
                 text.as_bytes().to_vec()
             }
         }
-        Event::FocusGained => b"\x1b[I".to_vec(),
-        Event::FocusLost => b"\x1b[O".to_vec(),
+        Event::FocusGained => {
+            if terminal.focus_reporting() {
+                b"\x1b[I".to_vec()
+            } else {
+                vec![]
+            }
+        }
+        Event::FocusLost => {
+            if terminal.focus_reporting() {
+                b"\x1b[O".to_vec()
+            } else {
+                vec![]
+            }
+        }
         Event::Resize(_, _) => vec![],
     }
 }

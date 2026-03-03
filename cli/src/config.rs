@@ -134,8 +134,7 @@ pub fn copy_comb(
     }
 
     // Read the branch from the copied directory
-    let branch = get_git_branch(&dest_dir.to_string_lossy())
-        .unwrap_or_else(|| "main".to_string());
+    let branch = get_git_branch(&dest_dir.to_string_lossy()).unwrap_or_else(|| "main".to_string());
 
     let comb = Comb {
         id: uuid::Uuid::new_v4().to_string(),
@@ -252,11 +251,7 @@ pub fn load_hive_state(beehive_dir: &str, dir_name: &str) -> Result<HiveState, S
     serde_json::from_str(&data).map_err(|e| format!("Failed to parse hive state: {}", e))
 }
 
-pub fn save_hive_state(
-    beehive_dir: &str,
-    dir_name: &str,
-    state: &HiveState,
-) -> Result<(), String> {
+pub fn save_hive_state(beehive_dir: &str, dir_name: &str, state: &HiveState) -> Result<(), String> {
     let state_path = Path::new(beehive_dir)
         .join(dir_name)
         .join(".hive")
@@ -316,11 +311,7 @@ pub fn get_git_branch(path: &str) -> Option<String> {
         .output()
         .ok()?;
     if output.status.success() {
-        Some(
-            String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string(),
-        )
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         None
     }

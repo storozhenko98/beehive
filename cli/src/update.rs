@@ -3,7 +3,8 @@ use std::fs;
 use crate::config::{cmd_with_path, run_cmd};
 
 const REPO: &str = "storozhenko98/beehive";
-const INSTALL_CMD: &str = "curl -fsSL https://raw.githubusercontent.com/storozhenko98/beehive/main/install.sh | bash";
+const INSTALL_CMD: &str =
+    "curl -fsSL https://raw.githubusercontent.com/storozhenko98/beehive/main/install.sh | bash";
 
 /// Check GitHub for a newer release. Returns `Some(version)` if an update is available.
 pub fn check_for_update() -> Option<String> {
@@ -60,8 +61,12 @@ pub fn self_update(version: &str) -> Result<(), String> {
     }
 
     // Find current executable path
-    let current_exe = std::env::current_exe()
-        .map_err(|_| format!("Cannot find current binary. Update manually:\n  {}", INSTALL_CMD))?;
+    let current_exe = std::env::current_exe().map_err(|_| {
+        format!(
+            "Cannot find current binary. Update manually:\n  {}",
+            INSTALL_CMD
+        )
+    })?;
 
     // Try to replace
     match fs::rename(&tmp, &current_exe) {
@@ -87,11 +92,8 @@ pub fn self_update(version: &str) -> Result<(), String> {
 
 /// Compare two semver-like version strings (e.g. "0.2.0" > "0.1.5").
 fn version_newer(remote: &str, current: &str) -> bool {
-    let parse = |s: &str| -> Vec<u32> {
-        s.split('.')
-            .filter_map(|p| p.parse::<u32>().ok())
-            .collect()
-    };
+    let parse =
+        |s: &str| -> Vec<u32> { s.split('.').filter_map(|p| p.parse::<u32>().ok()).collect() };
     let r = parse(remote);
     let c = parse(current);
     for i in 0..r.len().max(c.len()) {
@@ -106,4 +108,3 @@ fn version_newer(remote: &str, current: &str) -> bool {
     }
     false
 }
-
