@@ -50,6 +50,12 @@ pub enum AppMode {
         filter: String,
         selected: usize,
     },
+    /// Reordering a comb within its hive. Up/Down to move, m/Enter to confirm, Esc to cancel.
+    MovingComb {
+        hive_dir_name: String,
+        /// Snapshot of items before moving started, for Esc cancel.
+        original_items: Vec<NavItem>,
+    },
     Help,
     Settings {
         preflight: PreflightResult,
@@ -157,8 +163,7 @@ impl App {
             };
 
             let combs = get_combs(&self.beehive_dir, &dir_name).unwrap_or_default();
-            let live_combs: Vec<Comb> = combs.into_iter().filter(|c| !c.cloning).collect();
-            let comb_count = live_combs.len();
+            let comb_count = combs.iter().filter(|c| !c.cloning).count();
 
             items.push(NavItem::Hive {
                 info: info.clone(),
@@ -167,7 +172,7 @@ impl App {
             });
 
             if was_expanded {
-                for comb in live_combs {
+                for comb in combs {
                     items.push(NavItem::Comb {
                         hive_dir_name: dir_name.clone(),
                         comb,
@@ -201,8 +206,7 @@ impl App {
                 matches!(item, NavItem::Hive { info: h, expanded: true, .. } if h.dir_name == dir_name)
             });
 
-            let live_combs: Vec<Comb> = combs.into_iter().filter(|c| !c.cloning).collect();
-            let comb_count = live_combs.len();
+            let comb_count = combs.iter().filter(|c| !c.cloning).count();
 
             items.push(NavItem::Hive {
                 info: info.clone(),
@@ -211,7 +215,7 @@ impl App {
             });
 
             if was_expanded {
-                for comb in live_combs {
+                for comb in combs {
                     items.push(NavItem::Comb {
                         hive_dir_name: dir_name.clone(),
                         comb,
@@ -266,16 +270,14 @@ impl App {
                         let insert_pos = self.selected + 1;
                         let mut offset = 0;
                         for comb in combs {
-                            if !comb.cloning {
-                                self.items.insert(
-                                    insert_pos + offset,
-                                    NavItem::Comb {
-                                        hive_dir_name: info.dir_name.clone(),
-                                        comb,
-                                    },
-                                );
-                                offset += 1;
-                            }
+                            self.items.insert(
+                                insert_pos + offset,
+                                NavItem::Comb {
+                                    hive_dir_name: info.dir_name.clone(),
+                                    comb,
+                                },
+                            );
+                            offset += 1;
                         }
                     }
                 } else {
@@ -292,6 +294,10 @@ impl App {
                 None
             }
             NavItem::Comb { comb, .. } => {
+                if comb.cloning {
+                    self.status_message = Some("Still in progress...".to_string());
+                    return None;
+                }
                 let id = comb.id.clone();
                 let path = comb.path.clone();
                 self.active_comb_id = Some(id.clone());
@@ -380,6 +386,10 @@ impl App {
     }
 
     pub fn start_new_comb(&mut self) {
+        if self.pending_clone.is_some() {
+            self.status_message = Some("Wait for current operation to finish".to_string());
+            return;
+        }
         if let Some(dir_name) = self.selected_hive_dir() {
             self.mode = AppMode::Input {
                 prompt: "Comb name".to_string(),
@@ -394,6 +404,10 @@ impl App {
     }
 
     pub fn start_copy_comb(&mut self) {
+        if self.pending_clone.is_some() {
+            self.status_message = Some("Wait for current operation to finish".to_string());
+            return;
+        }
         if self.items.is_empty() {
             return;
         }
@@ -402,6 +416,11 @@ impl App {
             comb,
         } = &self.items[self.selected]
         {
+            if comb.cloning {
+                self.status_message =
+                    Some("Cannot copy a comb that is still in progress".to_string());
+                return;
+            }
             self.mode = AppMode::Input {
                 prompt: format!("Copy '{}' as", comb.name),
                 value: String::new(),
@@ -414,6 +433,98 @@ impl App {
         } else {
             self.status_message = Some("Select a comb to copy".to_string());
         }
+    }
+
+    pub fn start_move_comb(&mut self) {
+        if self.pending_clone.is_some() {
+            self.status_message = Some("Wait for current operation to finish".to_string());
+            return;
+        }
+        if self.items.is_empty() {
+            return;
+        }
+        if let NavItem::Comb {
+            hive_dir_name,
+            comb,
+        } = &self.items[self.selected]
+        {
+            if comb.cloning {
+                self.status_message = Some("Cannot move a comb in progress".to_string());
+                return;
+            }
+            let hive_dir_name = hive_dir_name.clone();
+            let original_items = self.items.clone();
+            self.mode = AppMode::MovingComb {
+                hive_dir_name,
+                original_items,
+            };
+        } else {
+            self.status_message = Some("Select a comb to move".to_string());
+        }
+    }
+
+    /// Move the currently selected comb up within its hive. Returns true if moved.
+    pub fn move_comb_up(&mut self) -> bool {
+        if self.selected == 0 {
+            return false;
+        }
+        let prev = self.selected - 1;
+        // Only swap with another Comb from the same hive (not past a Hive header)
+        if let (
+            NavItem::Comb {
+                hive_dir_name: h1, ..
+            },
+            NavItem::Comb {
+                hive_dir_name: h2, ..
+            },
+        ) = (&self.items[self.selected], &self.items[prev])
+        {
+            if h1 == h2 {
+                self.items.swap(self.selected, prev);
+                self.selected = prev;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Move the currently selected comb down within its hive. Returns true if moved.
+    pub fn move_comb_down(&mut self) -> bool {
+        let next = self.selected + 1;
+        if next >= self.items.len() {
+            return false;
+        }
+        // Only swap with another Comb from the same hive (not past a Hive header)
+        if let (
+            NavItem::Comb {
+                hive_dir_name: h1, ..
+            },
+            NavItem::Comb {
+                hive_dir_name: h2, ..
+            },
+        ) = (&self.items[self.selected], &self.items[next])
+        {
+            if h1 == h2 {
+                self.items.swap(self.selected, next);
+                self.selected = next;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Extract the current comb ID order for a given hive from the flat items list.
+    pub fn comb_order_for_hive(&self, hive_dir_name: &str) -> Vec<String> {
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                NavItem::Comb {
+                    hive_dir_name: h,
+                    comb,
+                } if h == hive_dir_name => Some(comb.id.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn start_add_hive(&mut self) {
@@ -433,6 +544,10 @@ impl App {
                 hive_dir_name,
                 comb,
             } => {
+                if comb.cloning {
+                    self.status_message = Some("Cannot delete while in progress".to_string());
+                    return;
+                }
                 self.mode = AppMode::Confirm {
                     message: format!("Delete comb '{}'?", comb.name),
                     action: ConfirmAction::DeleteComb {

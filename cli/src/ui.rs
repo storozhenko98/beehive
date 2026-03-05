@@ -75,7 +75,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
             *selected,
             comb_name,
         ),
-        AppMode::Normal => {}
+        AppMode::Normal | AppMode::MovingComb { .. } => {}
     }
 
     term_inner
@@ -151,10 +151,13 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let is_moving = matches!(app.mode, AppMode::MovingComb { .. });
+
     let items: Vec<ListItem> = app
         .items
         .iter()
-        .map(|item| match item {
+        .enumerate()
+        .map(|(i, item)| match item {
             NavItem::Hive {
                 info,
                 expanded,
@@ -176,28 +179,54 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                 ]))
             }
             NavItem::Comb { comb, .. } => {
-                let is_active = app
-                    .active_comb_id
-                    .as_ref()
-                    .map(|id| id == &comb.id)
-                    .unwrap_or(false);
+                if comb.cloning {
+                    // In-progress comb: animated spinner + dim text
+                    const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                    let ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
+                    let frame_char = SPINNER[(ms / 80) as usize % SPINNER.len()];
 
-                let has_terminal = app.terminals.contains_key(&comb.id);
-
-                let (marker, marker_color) = if is_active {
-                    ("▶ ", GREEN)
-                } else if has_terminal {
-                    ("● ", BLUE)
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("   {} ", frame_char), Style::default().fg(YELLOW)),
+                        Span::styled(comb.name.clone(), Style::default().fg(OVERLAY0)),
+                        Span::styled(" (in progress)".to_string(), Style::default().fg(SURFACE1)),
+                    ]))
+                } else if is_moving && i == app.selected {
+                    // Comb being moved: mauve highlight with move indicator
+                    ListItem::new(Line::from(vec![
+                        Span::styled("   ↕ ".to_string(), Style::default().fg(MAUVE)),
+                        Span::styled(
+                            comb.name.clone(),
+                            Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
+                    ]))
                 } else {
-                    ("  ", MANTLE)
-                };
-                let name_color = if is_active { GREEN } else { TEXT };
+                    let is_active = app
+                        .active_comb_id
+                        .as_ref()
+                        .map(|id| id == &comb.id)
+                        .unwrap_or(false);
 
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("   {}", marker), Style::default().fg(marker_color)),
-                    Span::styled(comb.name.clone(), Style::default().fg(name_color)),
-                    Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
-                ]))
+                    let has_terminal = app.terminals.contains_key(&comb.id);
+
+                    let (marker, marker_color) = if is_active {
+                        ("▶ ", GREEN)
+                    } else if has_terminal {
+                        ("● ", BLUE)
+                    } else {
+                        ("  ", MANTLE)
+                    };
+                    let name_color = if is_active { GREEN } else { TEXT };
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("   {}", marker), Style::default().fg(marker_color)),
+                        Span::styled(comb.name.clone(), Style::default().fg(name_color)),
+                        Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
+                    ]))
+                }
             }
         })
         .collect();
@@ -341,6 +370,30 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(" cancel", Style::default().fg(OVERLAY0)),
             ]),
+            AppMode::MovingComb { .. } => Line::from(vec![
+                Span::styled(
+                    " ↑↓",
+                    Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" move ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " m",
+                    Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("/", Style::default().fg(OVERLAY0)),
+                Span::styled(
+                    "enter",
+                    Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" drop ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " Esc",
+                    Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" cancel", Style::default().fg(OVERLAY0)),
+            ]),
             _ if app.focus == Focus::Terminal => Line::from(vec![
                 Span::styled(
                     " Ctrl+Space",
@@ -370,6 +423,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                             Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(" copy ", Style::default().fg(OVERLAY0)),
+                        Span::styled("│", Style::default().fg(SURFACE1)),
+                        Span::styled(
+                            " m",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" move ", Style::default().fg(OVERLAY0)),
                         Span::styled("│", Style::default().fg(SURFACE1)),
                     ]);
                 }

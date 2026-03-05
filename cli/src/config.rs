@@ -109,49 +109,6 @@ pub fn reset_config() -> Result<(), String> {
     Ok(())
 }
 
-pub fn copy_comb(
-    beehive_dir: &str,
-    hive_dir_name: &str,
-    source_path: &str,
-    new_name: &str,
-) -> Result<Comb, String> {
-    let hive_dir = Path::new(beehive_dir).join(hive_dir_name);
-    let dest_dir = hive_dir.join(new_name);
-
-    if dest_dir.exists() {
-        return Err(format!("Directory '{}' already exists", new_name));
-    }
-
-    // Recursive copy
-    let status = Command::new("cp")
-        .args(["-r", source_path, &dest_dir.to_string_lossy()])
-        .status()
-        .map_err(|e| format!("Copy failed: {}", e))?;
-
-    if !status.success() {
-        let _ = fs::remove_dir_all(&dest_dir);
-        return Err("Copy failed".to_string());
-    }
-
-    // Read the branch from the copied directory
-    let branch = get_git_branch(&dest_dir.to_string_lossy()).unwrap_or_else(|| "main".to_string());
-
-    let comb = Comb {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: new_name.to_string(),
-        branch,
-        path: dest_dir.to_string_lossy().to_string(),
-        created_at: chrono_now(),
-        panes: vec![],
-        cloning: false,
-    };
-
-    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
-    state.combs.push(comb.clone());
-    save_hive_state(beehive_dir, hive_dir_name, &state)?;
-    Ok(comb)
-}
-
 // --- Path/command helpers ---
 
 pub fn full_path() -> String {
@@ -340,6 +297,28 @@ pub fn list_branches(beehive_dir: &str, dir_name: &str) -> Result<(Vec<String>, 
     Ok((branches, default_branch))
 }
 
+/// Reorder the combs in state.json to match the given ID order.
+/// IDs not in the list are appended at the end (preserves combs added externally).
+pub fn reorder_combs(
+    beehive_dir: &str,
+    hive_dir_name: &str,
+    comb_ids: &[String],
+) -> Result<(), String> {
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
+
+    let mut ordered: Vec<Comb> = Vec::with_capacity(state.combs.len());
+    for id in comb_ids {
+        if let Some(pos) = state.combs.iter().position(|c| c.id == *id) {
+            ordered.push(state.combs.remove(pos));
+        }
+    }
+    // Append any combs not in the ID list (e.g. added by another process during the move)
+    ordered.append(&mut state.combs);
+    state.combs = ordered;
+
+    save_hive_state(beehive_dir, hive_dir_name, &state)
+}
+
 pub fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String> {
     if name.is_empty() {
         return Err("Name cannot be empty".to_string());
@@ -401,6 +380,48 @@ pub fn parse_repo_url(url: &str) -> Result<(String, String), String> {
         return Err(format!("Invalid: {}", url));
     }
     Ok((owner, repo_name))
+}
+
+/// Clean up stale `cloning: true` entries left by a crash or interrupted clone/copy.
+/// For each cloning comb: if the directory is a valid git repo, mark it complete;
+/// otherwise remove the entry and clean up any partial directory.
+pub fn cleanup_stale_cloning(beehive_dir: &str) {
+    let hives = match list_hives(beehive_dir) {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    for hive in hives {
+        let mut state = match load_hive_state(beehive_dir, &hive.dir_name) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let mut changed = false;
+        let mut cleaned_combs = Vec::new();
+        for comb in state.combs.drain(..) {
+            if comb.cloning {
+                let comb_path = Path::new(&comb.path);
+                let git_dir = comb_path.join(".git");
+                if comb_path.exists() && git_dir.exists() {
+                    // Clone/copy completed but flag wasn't flipped — recover it
+                    let mut recovered = comb;
+                    recovered.cloning = false;
+                    cleaned_combs.push(recovered);
+                } else {
+                    // Incomplete — remove the directory if it exists and drop the entry
+                    if comb_path.exists() {
+                        let _ = fs::remove_dir_all(comb_path);
+                    }
+                }
+                changed = true;
+            } else {
+                cleaned_combs.push(comb);
+            }
+        }
+        if changed {
+            state.combs = cleaned_combs;
+            let _ = save_hive_state(beehive_dir, &hive.dir_name, &state);
+        }
+    }
 }
 
 pub fn chrono_now() -> String {

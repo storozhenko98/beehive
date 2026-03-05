@@ -84,6 +84,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(beehive_dir, keyboard_enhanced)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+    // Clean up any stale cloning:true entries left by a previous crash
+    cleanup_stale_cloning(&app.beehive_dir);
+    app.refresh();
+
     if let Some(warn) = warnings.first() {
         app.status_message = Some(warn.clone());
     }
@@ -426,6 +430,10 @@ fn handle_key(
             handle_branch_picker(app, key, terminal)?;
             return Ok(());
         }
+        AppMode::MovingComb { .. } => {
+            handle_moving_comb(app, key)?;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -459,6 +467,7 @@ fn handle_key(
                         }
                     }
                     KeyCode::Char('n') => app.start_new_comb(),
+                    KeyCode::Char('m') => app.start_move_comb(),
                     KeyCode::Char('c') => app.start_copy_comb(),
                     KeyCode::Char('a') => app.start_add_hive(),
                     KeyCode::Char('d') => app.start_delete(),
@@ -528,7 +537,10 @@ fn handle_key(
                     app.mode = AppMode::Normal;
                 }
             },
-            AppMode::Help | AppMode::Settings { .. } | AppMode::BranchPicker { .. } => {}
+            AppMode::Help
+            | AppMode::Settings { .. }
+            | AppMode::BranchPicker { .. }
+            | AppMode::MovingComb { .. } => {}
         },
     }
     Ok(())
@@ -632,6 +644,48 @@ fn handle_branch_picker(
     Ok(())
 }
 
+fn handle_moving_comb(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.move_comb_up();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.move_comb_down();
+        }
+        KeyCode::Char('m') | KeyCode::Enter => {
+            // Confirm: save the new order to disk
+            let mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            if let AppMode::MovingComb { hive_dir_name, .. } = mode {
+                let comb_ids = app.comb_order_for_hive(&hive_dir_name);
+                match reorder_combs(&app.beehive_dir, &hive_dir_name, &comb_ids) {
+                    Ok(()) => {
+                        app.status_message = Some("Order saved".to_string());
+                    }
+                    Err(e) => {
+                        app.status_message = Some(format!("Failed to save order: {}", e));
+                    }
+                }
+            }
+        }
+        KeyCode::Esc => {
+            // Cancel: restore original item order
+            let mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            if let AppMode::MovingComb { original_items, .. } = mode {
+                // Restore the selected index to a valid position
+                let selected = app.selected.min(original_items.len().saturating_sub(1));
+                app.items = original_items;
+                app.selected = selected;
+                app.status_message = Some("Move cancelled".to_string());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn start_async_clone(
     app: &mut App,
     terminal: &mut Term,
@@ -639,10 +693,36 @@ fn start_async_clone(
     comb_name: String,
     branch: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = load_hive_state(&app.beehive_dir, &hive_dir_name)
+    // Re-validate against the latest state (guards against TOCTOU race from branch picker delay)
+    let mut state = load_hive_state(&app.beehive_dir, &hive_dir_name)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    if let Err(e) = validate_comb_name(&comb_name, &state.combs) {
+        app.status_message = Some(e);
+        return Ok(());
+    }
+
+    // Write a cloning:true placeholder to state BEFORE spawning the thread.
+    // This acts as a name reservation and gives the sidebar something to show.
+    let hive_dir = Path::new(&app.beehive_dir).join(&hive_dir_name);
+    let comb_dir = hive_dir.join(&comb_name);
+    let comb_id = uuid::Uuid::new_v4().to_string();
+
+    let placeholder = Comb {
+        id: comb_id.clone(),
+        name: comb_name.clone(),
+        branch: branch.clone(),
+        path: comb_dir.to_string_lossy().to_string(),
+        created_at: chrono_now(),
+        panes: vec![],
+        cloning: true,
+    };
+    state.combs.push(placeholder);
+    save_hive_state(&app.beehive_dir, &hive_dir_name, &state)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     app.status_message = Some(format!("Cloning '{}'...", comb_name));
+    app.refresh();
     terminal.draw(|frame| {
         ui::render(frame, app);
     })?;
@@ -652,6 +732,7 @@ fn start_async_clone(
     let beehive_dir = app.beehive_dir.clone();
     let hive_dir_clone = hive_dir_name.clone();
     let comb_name_clone = comb_name.clone();
+    let comb_id_clone = comb_id.clone();
     let branch_clone = branch.clone();
 
     std::thread::spawn(move || {
@@ -659,8 +740,8 @@ fn start_async_clone(
             &beehive_dir,
             &hive_dir_clone,
             &comb_name_clone,
+            &comb_id_clone,
             &branch_clone,
-            &state,
         );
         let mut guard = slot_clone.lock().unwrap();
         *guard = Some(CloneResult {
@@ -672,6 +753,74 @@ fn start_async_clone(
 
     app.pending_clone = Some(slot);
     app.activity = Some(format!("Cloning '{}'", comb_name));
+    Ok(())
+}
+
+fn start_async_copy(
+    app: &mut App,
+    terminal: &mut Term,
+    hive_dir_name: String,
+    comb_name: String,
+    source_comb_path: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Load fresh state and validate
+    let mut state = load_hive_state(&app.beehive_dir, &hive_dir_name)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    if let Err(e) = validate_comb_name(&comb_name, &state.combs) {
+        app.status_message = Some(e);
+        return Ok(());
+    }
+
+    // Write cloning:true placeholder (reused for copy operations too)
+    let hive_dir = Path::new(&app.beehive_dir).join(&hive_dir_name);
+    let comb_dir = hive_dir.join(&comb_name);
+    let comb_id = uuid::Uuid::new_v4().to_string();
+
+    let placeholder = Comb {
+        id: comb_id.clone(),
+        name: comb_name.clone(),
+        branch: String::new(), // filled in after copy
+        path: comb_dir.to_string_lossy().to_string(),
+        created_at: chrono_now(),
+        panes: vec![],
+        cloning: true,
+    };
+    state.combs.push(placeholder);
+    save_hive_state(&app.beehive_dir, &hive_dir_name, &state)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    app.status_message = Some(format!("Copying to '{}'...", comb_name));
+    app.refresh();
+    terminal.draw(|frame| {
+        ui::render(frame, app);
+    })?;
+
+    let slot: Arc<Mutex<Option<CloneResult>>> = Arc::new(Mutex::new(None));
+    let slot_clone = Arc::clone(&slot);
+    let beehive_dir = app.beehive_dir.clone();
+    let hive_dir_clone = hive_dir_name.clone();
+    let comb_name_clone = comb_name.clone();
+    let comb_id_clone = comb_id.clone();
+
+    std::thread::spawn(move || {
+        let result = copy_comb_sync(
+            &beehive_dir,
+            &hive_dir_clone,
+            &comb_name_clone,
+            &comb_id_clone,
+            &source_comb_path,
+        );
+        let mut guard = slot_clone.lock().unwrap();
+        *guard = Some(CloneResult {
+            comb: result,
+            comb_name: comb_name_clone,
+            hive_dir_name: hive_dir_clone,
+        });
+    });
+
+    app.pending_clone = Some(slot);
+    app.activity = Some(format!("Copying '{}'", comb_name));
     Ok(())
 }
 
@@ -742,32 +891,7 @@ fn handle_input_submit(
                 source_comb_path,
                 ..
             } => {
-                let state = load_hive_state(&app.beehive_dir, &hive_dir_name)
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-                if let Err(e) = validate_comb_name(&value, &state.combs) {
-                    app.status_message = Some(e);
-                    return Ok(());
-                }
-
-                app.status_message = Some(format!("Copying to '{}'...", value));
-                terminal.draw(|frame| {
-                    ui::render(frame, app);
-                })?;
-
-                match copy_comb(&app.beehive_dir, &hive_dir_name, &source_comb_path, &value) {
-                    Ok(comb) => {
-                        app.status_message = Some(format!("Copied to '{}'", value));
-                        let id = comb.id.clone();
-                        let path = comb.path.clone();
-                        app.active_comb_id = Some(id.clone());
-                        app.refresh();
-                        app.open_terminal(&id, &path);
-                    }
-                    Err(e) => {
-                        app.status_message = Some(format!("Copy failed: {}", e));
-                    }
-                }
-                app.refresh();
+                start_async_copy(app, terminal, hive_dir_name, value, source_comb_path)?;
             }
         }
     }
@@ -831,60 +955,128 @@ fn create_comb_sync(
     beehive_dir: &str,
     hive_dir_name: &str,
     comb_name: &str,
+    comb_id: &str,
     branch: &str,
-    state: &HiveState,
 ) -> Result<Comb, String> {
     let hive_dir = Path::new(beehive_dir).join(hive_dir_name);
     let comb_dir = hive_dir.join(comb_name);
-    let comb_id = uuid::Uuid::new_v4().to_string();
+
+    // Helper: on any failure, remove the placeholder from state and clean up the directory.
+    let cleanup = |err_msg: String| -> String {
+        if let Ok(mut st) = load_hive_state(beehive_dir, hive_dir_name) {
+            st.combs.retain(|c| c.id != comb_id);
+            let _ = save_hive_state(beehive_dir, hive_dir_name, &st);
+        }
+        let _ = std::fs::remove_dir_all(&comb_dir);
+        err_msg
+    };
+
+    // Load state to get repo_url (the placeholder was written by the caller)
+    let state = load_hive_state(beehive_dir, hive_dir_name)
+        .map_err(|e| cleanup(format!("Failed to read state: {}", e)))?;
 
     let clone_output = cmd_with_path("git")
         .args(["clone", &state.info.repo_url, &comb_dir.to_string_lossy()])
         .output()
-        .map_err(|e| format!("Clone failed: {}", e))?;
+        .map_err(|e| cleanup(format!("Clone failed: {}", e)))?;
 
     if !clone_output.status.success() {
-        let _ = std::fs::remove_dir_all(&comb_dir);
-        return Err(format!(
+        return Err(cleanup(format!(
             "Clone failed: {}",
             String::from_utf8_lossy(&clone_output.stderr)
                 .lines()
                 .next()
                 .unwrap_or("unknown")
-        ));
+        )));
     }
 
     let checkout = cmd_with_path("git")
         .args(["checkout", branch])
         .current_dir(&comb_dir)
         .output()
-        .map_err(|e| format!("Checkout failed: {}", e))?;
+        .map_err(|e| cleanup(format!("Checkout failed: {}", e)))?;
 
     if !checkout.status.success() {
         let checkout_new = cmd_with_path("git")
             .args(["checkout", "-b", branch])
             .current_dir(&comb_dir)
             .output()
-            .map_err(|e| format!("Checkout -b failed: {}", e))?;
+            .map_err(|e| cleanup(format!("Checkout -b failed: {}", e)))?;
         if !checkout_new.status.success() {
-            let _ = std::fs::remove_dir_all(&comb_dir);
-            return Err(format!("Branch '{}' failed", branch));
+            return Err(cleanup(format!("Branch '{}' failed", branch)));
         }
     }
 
-    let comb = Comb {
-        id: comb_id,
-        name: comb_name.to_string(),
-        branch: branch.to_string(),
-        path: comb_dir.to_string_lossy().to_string(),
-        created_at: chrono_now(),
-        panes: vec![],
-        cloning: false,
+    // Success: flip the placeholder to cloning: false
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)
+        .map_err(|e| cleanup(format!("Failed to update state: {}", e)))?;
+    let comb = if let Some(c) = state.combs.iter_mut().find(|c| c.id == comb_id) {
+        c.cloning = false;
+        c.clone()
+    } else {
+        // Placeholder was removed externally (e.g. user deleted it) — nothing to do
+        return Err("Comb was removed during cloning".to_string());
+    };
+    save_hive_state(beehive_dir, hive_dir_name, &state)
+        .map_err(|e| format!("Clone succeeded but failed to save state: {}", e))?;
+    Ok(comb)
+}
+
+// --- Sync copy operation (runs in background thread) ---
+
+fn copy_comb_sync(
+    beehive_dir: &str,
+    hive_dir_name: &str,
+    comb_name: &str,
+    comb_id: &str,
+    source_path: &str,
+) -> Result<Comb, String> {
+    let hive_dir = Path::new(beehive_dir).join(hive_dir_name);
+    let comb_dir = hive_dir.join(comb_name);
+
+    // Helper: on any failure, remove the placeholder from state and clean up the directory.
+    let cleanup = |err_msg: String| -> String {
+        if let Ok(mut st) = load_hive_state(beehive_dir, hive_dir_name) {
+            st.combs.retain(|c| c.id != comb_id);
+            let _ = save_hive_state(beehive_dir, hive_dir_name, &st);
+        }
+        let _ = std::fs::remove_dir_all(&comb_dir);
+        err_msg
     };
 
-    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
-    state.combs.push(comb.clone());
-    save_hive_state(beehive_dir, hive_dir_name, &state)?;
+    if comb_dir.exists() {
+        return Err(cleanup(format!(
+            "Directory '{}' already exists on disk",
+            comb_name
+        )));
+    }
+
+    // Recursive copy
+    let status = cmd_with_path("cp")
+        .args(["-r", source_path, &comb_dir.to_string_lossy()])
+        .status()
+        .map_err(|e| cleanup(format!("Copy failed: {}", e)))?;
+
+    if !status.success() {
+        return Err(cleanup("Copy failed".to_string()));
+    }
+
+    // Read the branch from the copied directory
+    let branch =
+        config::get_git_branch(&comb_dir.to_string_lossy()).unwrap_or_else(|| "main".to_string());
+
+    // Success: flip the placeholder to cloning: false and fill in the branch
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)
+        .map_err(|e| cleanup(format!("Failed to update state: {}", e)))?;
+    let comb = if let Some(c) = state.combs.iter_mut().find(|c| c.id == comb_id) {
+        c.cloning = false;
+        c.branch = branch;
+        c.clone()
+    } else {
+        return Err("Comb was removed during copying".to_string());
+    };
+    save_hive_state(beehive_dir, hive_dir_name, &state)
+        .map_err(|e| format!("Copy succeeded but failed to save state: {}", e))?;
     Ok(comb)
 }
 
