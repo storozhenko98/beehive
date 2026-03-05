@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod keyboard;
 mod terminal;
 mod ui;
 mod update;
@@ -12,7 +13,8 @@ use std::time::Duration;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyModifiers,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -49,6 +51,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+
+    // Query keyboard enhancement support (kitty protocol).
+    // Must be after enable_raw_mode(). Returns quickly for both supporting
+    // and non-supporting terminals (< 100ms typical, 2s timeout worst case).
+    let keyboard_enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+
     execute!(
         stdout,
         EnterAlternateScreen,
@@ -56,10 +64,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         EnableBracketedPaste,
         EnableFocusChange,
     )?;
+
+    // Enable kitty keyboard protocol if the terminal supports it.
+    // This gives us: SUPER/META modifiers, press/repeat/release event kinds,
+    // and unambiguous encoding for Enter, Tab, Backspace, Esc.
+    if keyboard_enhanced {
+        execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        )?;
+    }
+
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(beehive_dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let mut app = App::new(beehive_dir, keyboard_enhanced)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     if let Some(warn) = warnings.first() {
         app.status_message = Some(warn.clone());
@@ -76,6 +99,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let result = run_app(&mut terminal, &mut app, update_slot);
+
+    // Pop keyboard enhancement before leaving alternate screen
+    if keyboard_enhanced {
+        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    }
 
     disable_raw_mode()?;
     execute!(
@@ -136,6 +164,9 @@ fn run_app(
     app: &mut App,
     update_slot: Arc<Mutex<Option<Option<String>>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let key_trace = std::env::var("BEEHIVE_KEY_TRACE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let mut tick_count: u32 = 0;
     let mut dirty = true;
     let mut term_area = ratatui::layout::Rect::default();
@@ -221,7 +252,7 @@ fn run_app(
         while event::poll(Duration::from_millis(0))? {
             let evt = event::read()?;
             dirty = true;
-            process_event(app, &evt, term_area, terminal)?;
+            process_event(app, &evt, term_area, terminal, key_trace)?;
             if app.should_quit {
                 break;
             }
@@ -235,7 +266,7 @@ fn run_app(
         if event::poll(Duration::from_millis(16))? {
             let evt = event::read()?;
             dirty = true;
-            process_event(app, &evt, term_area, terminal)?;
+            process_event(app, &evt, term_area, terminal, key_trace)?;
         }
         // PTY output may have arrived during the wait — always re-check at top of loop
 
@@ -253,21 +284,48 @@ fn process_event(
     evt: &Event,
     term_area: ratatui::layout::Rect,
     terminal: &mut Term,
+    key_trace: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Filter out key release events when keyboard enhancement is active.
+    // We only process Press and Repeat — Release events would cause double input.
+    if let Event::Key(key) = evt {
+        if key.kind == KeyEventKind::Release {
+            if key_trace {
+                eprintln!(
+                    "[key-trace] SKIP release: {:?} mods={:?}",
+                    key.code, key.modifiers
+                );
+            }
+            return Ok(());
+        }
+        if key_trace {
+            eprintln!(
+                "[key-trace] {:?} kind={:?} mods={:?} enhanced={}",
+                key.code, key.kind, key.modifiers, app.keyboard_enhanced,
+            );
+        }
+    }
+
     if app.focus == Focus::Terminal && matches!(app.mode, AppMode::Normal) {
         match evt {
             Event::Key(key) => {
+                // Ctrl+Space: toggle focus back to sidebar
                 if is_focus_toggle(key) {
                     app.focus = Focus::Sidebar;
-                } else if key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    if let Some(t) = app.active_terminal() {
-                        t.write_input(&[0x03]);
-                    }
                 } else if let Some(t) = app.active_terminal() {
+                    // All key events go through the unified encoding pipeline.
+                    // No special-casing for Ctrl+C etc. — key_to_bytes handles it.
                     let bytes = terminal::event_to_bytes(evt, t, term_area);
                     if !bytes.is_empty() {
+                        if key_trace {
+                            let inner_enh = t.keyboard_enhanced();
+                            eprintln!(
+                                "[key-trace] → PTY {} bytes: {:02x?} inner_enhanced={}",
+                                bytes.len(),
+                                bytes,
+                                inner_enh,
+                            );
+                        }
                         t.write_input(&bytes);
                     }
                 }

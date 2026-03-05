@@ -622,7 +622,7 @@ fn render_branch_picker(
 }
 
 fn render_settings(frame: &mut Frame, app: &App, pf: &crate::config::PreflightResult) {
-    let area = overlay_rect(55, 18, frame.area());
+    let area = overlay_rect(55, 22, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -698,6 +698,22 @@ fn render_settings(frame: &mut Frame, app: &App, pf: &crate::config::PreflightRe
         Line::from(vec![
             Span::styled("  gh auth      ", label_style),
             auth_status,
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Keyboard", header_style)),
+        Line::from(vec![
+            Span::styled("  Enhanced keys  ", label_style),
+            if app.keyboard_enhanced {
+                Span::styled(
+                    "active (kitty protocol)",
+                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(
+                    "legacy (Cmd/Shift+Enter limited)",
+                    Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
+                )
+            },
         ]),
         Line::from(""),
         Line::from(Span::styled("  Sessions", header_style)),

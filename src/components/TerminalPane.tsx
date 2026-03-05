@@ -56,6 +56,13 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
       fontSize: 13,
       fontFamily: '"MesloLGS NF", "Hack Nerd Font", "FiraCode Nerd Font", "JetBrainsMono Nerd Font", Menlo, Monaco, "Courier New", monospace',
       allowProposedApi: true,
+      // Enable kitty keyboard protocol (CSI u) via xterm.js 6.1 vtExtensions.
+      // This lets the terminal respond to keyboard protocol queries from inner apps
+      // (zellij, opencode, claude, etc.) and properly encode modifier combos like
+      // Shift+Enter, Cmd+Right, Ctrl+Shift+T as CSI u sequences.
+      vtExtensions: {
+        kittyKeyboard: true,
+      },
       theme: {
         background: "#1e1e2e",
         foreground: "#cdd6f4",
@@ -92,49 +99,32 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
     fitAddonRef.current = fitAddon;
     sessionIdRef.current = sessionId;
 
-    // --- Keyboard passthrough for TUI apps (Zellij, tmux, etc.) ---
-    // xterm.js 5.5 doesn't support the kitty keyboard protocol, so multi-modifier
-    // combos like Ctrl+Shift+T generate the same byte as Ctrl+T. We manually
-    // generate CSI u sequences for these combos.
-    // CSI u format: ESC [ <codepoint> ; <modifier> u
-    // Modifier encoding: value = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0)
+    // --- Keyboard passthrough ---
+    // With kittyKeyboard: true (xterm.js 6.1+), the terminal handles CSI u
+    // encoding natively for all modifier combos including Shift+Enter, Ctrl+Shift+T, etc.
+    // We only need to:
+    // 1. Let Cmd+C/V/A/Q pass to native macOS handling
+    // 2. Prevent the WebView from consuming modifier combos before xterm.js sees them
     terminal.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
       if (ev.type !== "keydown") return true;
 
-      // Let Cmd+C/V/A/Q pass to native macOS handling
+      // Let Cmd+C/V/A/Q pass to native macOS handling (copy, paste, select all, quit)
       if (ev.metaKey && !ev.ctrlKey && !ev.altKey) {
         if (ev.key === "c" || ev.key === "v" || ev.key === "a" || ev.key === "q") {
           return false;
         }
       }
 
-      // Check for multi-modifier combos that need CSI u encoding
-      const hasCtrl = ev.ctrlKey;
-      const hasShift = ev.shiftKey;
-      const hasAlt = ev.altKey;
-      const hasMeta = ev.metaKey;
-      const needsCsiU = !hasMeta && ((hasCtrl && hasShift) || (hasCtrl && hasAlt) || (hasAlt && hasShift));
-
-      if (needsCsiU && ev.key.length === 1) {
-        const codepoint = ev.key.toLowerCase().charCodeAt(0);
-        const mod = 1 + (hasShift ? 1 : 0) + (hasAlt ? 2 : 0) + (hasCtrl ? 4 : 0);
-        const seq = `\x1b[${codepoint};${mod}u`;
-        if (sessionIdRef.current) {
-          invoke("write_to_pty", { id: sessionIdRef.current, data: seq }).catch(() => {});
-        }
-        ev.preventDefault();
-        return false; // Don't let xterm.js also generate a legacy sequence
-      }
-
-      // Everything else: let xterm.js handle normally
+      // Everything else: let xterm.js handle via kitty keyboard protocol
       return true;
     });
 
     // Global keydown listener in capture phase to prevent WebView from
-    // consuming modifier combos (Ctrl+Shift+T, etc.) before xterm.js sees them
+    // consuming modifier combos (Ctrl+Shift+T, Ctrl+Alt+*, etc.) before xterm.js sees them
     const globalKeyHandler = (ev: KeyboardEvent) => {
       if (document.activeElement !== terminal.textarea) return;
-      if ((ev.ctrlKey && ev.shiftKey) || (ev.ctrlKey && ev.altKey)) {
+      // Protect Ctrl+Shift, Ctrl+Alt, and Alt+Shift combos from WebView interception
+      if ((ev.ctrlKey && ev.shiftKey) || (ev.ctrlKey && ev.altKey) || (ev.altKey && ev.shiftKey)) {
         if (!ev.metaKey) {
           ev.preventDefault();
         }

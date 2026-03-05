@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use crate::config::full_path;
+use crate::keyboard::{self, KeyboardProtocol};
 
 /// Detect DECSET 1004 (focus reporting) requests in the PTY output stream.
 /// Scans for \x1b[?1004h (enable) and \x1b[?1004l (disable).
@@ -33,6 +34,8 @@ pub struct EmbeddedTerminal {
     alive: Arc<AtomicBool>,
     /// Whether the inner app requested focus reporting (DECSET 1004).
     focus_reporting: Arc<AtomicBool>,
+    /// Keyboard protocol state negotiated by the inner app (legacy vs enhanced).
+    keyboard_protocol: KeyboardProtocol,
 }
 
 impl EmbeddedTerminal {
@@ -77,11 +80,13 @@ impl EmbeddedTerminal {
         let master = Arc::new(Mutex::new(pair.master));
         let writer = Arc::new(Mutex::new(writer));
 
+        let keyboard_protocol = KeyboardProtocol::new();
         let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>();
 
-        // Background reader: PTY output → channel + OSC 52 clipboard + focus detect
+        // Background reader: PTY output → channel + OSC 52 clipboard + focus detect + keyboard protocol detect
         let alive_clone = Arc::clone(&alive);
         let focus_clone = Arc::clone(&focus_reporting);
+        let kb_flags_clone = keyboard_protocol.flags_ref();
         std::thread::spawn(move || {
             let mut buf = [0u8; 16384];
             let mut osc52 = Osc52Detector::new();
@@ -92,6 +97,7 @@ impl EmbeddedTerminal {
                         let data = &buf[..n];
                         osc52.process(data);
                         detect_focus_reporting(data, &focus_clone);
+                        keyboard::detect_keyboard_protocol(data, &kb_flags_clone);
                         if output_tx.send(data.to_vec()).is_err() {
                             break; // receiver dropped
                         }
@@ -110,6 +116,7 @@ impl EmbeddedTerminal {
             _child: child,
             alive,
             focus_reporting,
+            keyboard_protocol,
         })
     }
 
@@ -178,11 +185,17 @@ impl EmbeddedTerminal {
     pub fn bracketed_paste(&self) -> bool {
         self.parser.screen().bracketed_paste()
     }
+
+    /// Whether the inner application has requested enhanced keyboard mode
+    /// via the kitty keyboard protocol (CSI > N u).
+    pub fn keyboard_enhanced(&self) -> bool {
+        self.keyboard_protocol.is_enhanced()
+    }
 }
 
-/// Compute the xterm modifier parameter from crossterm KeyModifiers.
-/// Encoding: value = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0)
-/// Returns 0 if no modifiers are set (meaning: no modifier parameter needed).
+/// Compute the kitty keyboard protocol modifier parameter from crossterm KeyModifiers.
+/// Encoding per kitty spec: value = 1 + (shift:1 | alt:2 | ctrl:4 | super:8 | hyper:16 | meta:32)
+/// Returns 0 if no modifiers are set (meaning: omit modifier parameter).
 fn xterm_modifier(mods: crossterm::event::KeyModifiers) -> u8 {
     use crossterm::event::KeyModifiers;
     let mut m: u8 = 0;
@@ -195,6 +208,15 @@ fn xterm_modifier(mods: crossterm::event::KeyModifiers) -> u8 {
     if mods.contains(KeyModifiers::CONTROL) {
         m += 4;
     }
+    if mods.contains(KeyModifiers::SUPER) {
+        m += 8;
+    }
+    if mods.contains(KeyModifiers::HYPER) {
+        m += 16;
+    }
+    if mods.contains(KeyModifiers::META) {
+        m += 32;
+    }
     if m > 0 {
         m + 1
     } else {
@@ -203,19 +225,31 @@ fn xterm_modifier(mods: crossterm::event::KeyModifiers) -> u8 {
 }
 
 /// Check if the modifier combination requires CSI u encoding because
-/// legacy terminal encoding cannot represent it (e.g. Ctrl+Shift+letter).
+/// legacy terminal encoding cannot represent it.
+/// Returns true for:
+/// - Any combo involving SUPER, HYPER, or META (no legacy representation at all)
+/// - Any two-or-more traditional modifier combo (Ctrl+Shift, Ctrl+Alt, Alt+Shift)
 fn needs_csi_u(mods: crossterm::event::KeyModifiers) -> bool {
     use crossterm::event::KeyModifiers;
+    // SUPER/HYPER/META have no legacy encoding — always need CSI u
+    if mods.intersects(KeyModifiers::SUPER | KeyModifiers::HYPER | KeyModifiers::META) {
+        return true;
+    }
     let has_ctrl = mods.contains(KeyModifiers::CONTROL);
     let has_shift = mods.contains(KeyModifiers::SHIFT);
     let has_alt = mods.contains(KeyModifiers::ALT);
-    // Any two-or-more modifier combo needs CSI u for character keys
+    // Any two-or-more traditional modifier combo needs CSI u for character keys
     (has_ctrl && has_shift) || (has_ctrl && has_alt) || (has_alt && has_shift)
 }
 
 /// Generate CSI u sequence: ESC [ codepoint ; modifier u
+/// When modifier is 0, the semicolon and modifier are omitted: ESC [ codepoint u
 fn csi_u(codepoint: u32, modifier: u8) -> Vec<u8> {
-    format!("\x1b[{};{}u", codepoint, modifier).into_bytes()
+    if modifier > 0 {
+        format!("\x1b[{};{}u", codepoint, modifier).into_bytes()
+    } else {
+        format!("\x1b[{}u", codepoint).into_bytes()
+    }
 }
 
 /// Generate a modified special key sequence.
@@ -236,24 +270,39 @@ fn modified_special_key_tilde(code: u16, modifier: u8) -> Vec<u8> {
 }
 
 /// Translate a crossterm key event into the byte sequence to send to a PTY.
-/// Uses CSI u encoding for multi-modifier character combos (Ctrl+Shift, Ctrl+Alt, etc.)
-/// that legacy terminal encoding cannot represent. Single-modifier keys use legacy encoding
-/// for maximum backward compatibility.
-pub fn key_to_bytes(key: &crossterm::event::KeyEvent, app_cursor: bool) -> Vec<u8> {
+///
+/// When `inner_enhanced` is true (inner app requested kitty keyboard protocol),
+/// ambiguous keys (Enter, Tab, Backspace, Esc, Space) are ALWAYS encoded as CSI u,
+/// even without modifiers, so the inner app can fully disambiguate them.
+///
+/// When `inner_enhanced` is false (legacy mode):
+/// - Character keys with multi-modifier or SUPER/META: CSI u encoding
+/// - Character keys with single legacy modifier (Ctrl/Alt): legacy encoding for backward compat
+/// - Enter/Backspace/Tab/Esc with ANY modifier: CSI u (no legacy representation for modified forms)
+/// - Unmodified ambiguous keys: legacy encoding (e.g. Enter = \r)
+///
+/// Arrow/Home/End/PageUp/PageDown/Insert/Delete/F-keys always use standard xterm modified sequences.
+/// All modifier calculations include SUPER/HYPER/META bits per kitty protocol spec.
+pub fn key_to_bytes(
+    key: &crossterm::event::KeyEvent,
+    app_cursor: bool,
+    inner_enhanced: bool,
+) -> Vec<u8> {
     use crossterm::event::{KeyCode, KeyModifiers};
 
     let mods = key.modifiers;
     let xmod = xterm_modifier(mods);
 
     match key.code {
+        // --- Character keys ---
         KeyCode::Char(c) => {
-            // Multi-modifier combos (Ctrl+Shift, Ctrl+Alt, etc.) need CSI u
+            // Multi-modifier combos or SUPER/META need CSI u (no legacy representation)
             if needs_csi_u(mods) {
                 let codepoint = c.to_ascii_lowercase() as u32;
                 return csi_u(codepoint, xmod);
             }
 
-            // Single-modifier legacy encoding
+            // Single-modifier legacy encoding (backward compatible)
             if mods.contains(KeyModifiers::CONTROL) {
                 if c.is_ascii_alphabetic() {
                     vec![(c.to_ascii_lowercase() as u8) & 0x1f]
@@ -281,26 +330,60 @@ pub fn key_to_bytes(key: &crossterm::event::KeyEvent, app_cursor: bool) -> Vec<u
                 buf[..c.len_utf8()].to_vec()
             }
         }
-        KeyCode::Enter => vec![b'\r'],
+
+        // --- Ambiguous keys: CSI u when modified, OR when inner app is in enhanced mode ---
+        // In enhanced mode, even unmodified Enter/Tab/Backspace/Esc use CSI u
+        // so the inner app can fully disambiguate them (e.g. Ctrl+I vs Tab).
+        KeyCode::Enter => {
+            if xmod > 0 || inner_enhanced {
+                csi_u(13, xmod) // ESC[13u or ESC[13;{mod}u
+            } else {
+                vec![b'\r']
+            }
+        }
         KeyCode::Backspace => {
-            if xmod > 0 {
-                // Backspace = codepoint 127
-                csi_u(127, xmod)
+            if xmod > 0 || inner_enhanced {
+                csi_u(127, xmod) // ESC[127u or ESC[127;{mod}u
             } else {
                 vec![0x7f]
             }
         }
         KeyCode::Tab => {
-            if mods.contains(KeyModifiers::SHIFT) {
-                vec![0x1b, b'[', b'Z'] // BackTab
+            if inner_enhanced {
+                // Enhanced mode: always CSI u (inner app can distinguish Tab vs Ctrl+I)
+                csi_u(9, xmod)
+            } else if mods == KeyModifiers::SHIFT {
+                // Legacy: pure Shift+Tab uses BackTab for maximum compatibility
+                vec![0x1b, b'[', b'Z']
+            } else if xmod > 0 {
+                // Legacy: other modifiers use CSI u
+                csi_u(9, xmod)
             } else {
                 vec![b'\t']
             }
         }
-        KeyCode::BackTab => vec![0x1b, b'[', b'Z'],
-        KeyCode::Esc => vec![0x1b],
+        KeyCode::BackTab => {
+            if inner_enhanced {
+                // Enhanced mode: CSI u with shift modifier
+                let mod_val = if xmod > 0 { xmod } else { 2 }; // BackTab always has shift
+                csi_u(9, mod_val)
+            } else if xmod > 2 {
+                // Legacy: additional modifiers beyond shift use CSI u
+                csi_u(9, xmod)
+            } else {
+                vec![0x1b, b'[', b'Z']
+            }
+        }
+        KeyCode::Esc => {
+            if xmod > 0 || inner_enhanced {
+                csi_u(27, xmod) // ESC[27u or ESC[27;{mod}u
+            } else {
+                vec![0x1b]
+            }
+        }
 
-        // Arrow keys — with modifier support
+        // --- Arrow keys: standard xterm modified encoding ---
+        // Includes SUPER/META via xmod which now encodes all 6 modifiers.
         KeyCode::Up => {
             if xmod > 0 {
                 modified_special_key_csi(b'A', xmod)
@@ -338,7 +421,7 @@ pub fn key_to_bytes(key: &crossterm::event::KeyEvent, app_cursor: bool) -> Vec<u
             }
         }
 
-        // Navigation keys — with modifier support
+        // --- Navigation keys: standard xterm modified encoding ---
         KeyCode::Home => {
             if xmod > 0 {
                 modified_special_key_csi(b'H', xmod)
@@ -382,7 +465,7 @@ pub fn key_to_bytes(key: &crossterm::event::KeyEvent, app_cursor: bool) -> Vec<u
             }
         }
 
-        // Function keys — with modifier support
+        // --- Function keys: standard xterm modified encoding ---
         // F1-F4 use SS3 format without modifiers, CSI format with modifiers
         KeyCode::F(1) => {
             if xmod > 0 {
@@ -486,7 +569,8 @@ pub fn event_to_bytes(
     match event {
         Event::Key(key) => {
             let app_cursor = terminal.application_cursor();
-            key_to_bytes(key, app_cursor)
+            let inner_enhanced = terminal.keyboard_enhanced();
+            key_to_bytes(key, app_cursor, inner_enhanced)
         }
         Event::Mouse(mouse) => mouse_to_bytes(mouse, terminal, term_area),
         Event::Paste(text) => {
@@ -754,5 +838,322 @@ fn set_clipboard(text: &[u8]) {
             let _ = stdin.write_all(text);
         }
         let _ = child.wait();
+    }
+}
+
+// =============================================================================
+// Tests — key encoding matrix covering all issue #3 keys + modifier combos
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    /// Helper: construct a key event with given code + modifiers
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: mods,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        }
+    }
+
+    // --- xterm_modifier tests ---
+
+    #[test]
+    fn test_xmod_none() {
+        assert_eq!(xterm_modifier(KeyModifiers::NONE), 0);
+    }
+
+    #[test]
+    fn test_xmod_shift() {
+        assert_eq!(xterm_modifier(KeyModifiers::SHIFT), 2); // 1 + 1
+    }
+
+    #[test]
+    fn test_xmod_ctrl() {
+        assert_eq!(xterm_modifier(KeyModifiers::CONTROL), 5); // 1 + 4
+    }
+
+    #[test]
+    fn test_xmod_alt() {
+        assert_eq!(xterm_modifier(KeyModifiers::ALT), 3); // 1 + 2
+    }
+
+    #[test]
+    fn test_xmod_super() {
+        assert_eq!(xterm_modifier(KeyModifiers::SUPER), 9); // 1 + 8
+    }
+
+    #[test]
+    fn test_xmod_ctrl_shift() {
+        assert_eq!(
+            xterm_modifier(KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            6 // 1 + 1 + 4
+        );
+    }
+
+    #[test]
+    fn test_xmod_shift_super() {
+        assert_eq!(
+            xterm_modifier(KeyModifiers::SHIFT | KeyModifiers::SUPER),
+            10 // 1 + 1 + 8
+        );
+    }
+
+    #[test]
+    fn test_xmod_meta() {
+        assert_eq!(xterm_modifier(KeyModifiers::META), 33); // 1 + 32
+    }
+
+    // --- needs_csi_u tests ---
+
+    #[test]
+    fn test_csi_u_needed_for_super() {
+        assert!(needs_csi_u(KeyModifiers::SUPER));
+    }
+
+    #[test]
+    fn test_csi_u_needed_for_meta() {
+        assert!(needs_csi_u(KeyModifiers::META));
+    }
+
+    #[test]
+    fn test_csi_u_needed_for_ctrl_shift() {
+        assert!(needs_csi_u(KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn test_csi_u_not_needed_for_ctrl_alone() {
+        assert!(!needs_csi_u(KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn test_csi_u_not_needed_for_shift_alone() {
+        assert!(!needs_csi_u(KeyModifiers::SHIFT));
+    }
+
+    // --- Issue #3 keys: Cmd+A, Cmd+Right, Shift+Cmd+Right, Shift+Enter ---
+
+    #[test]
+    fn test_cmd_a() {
+        // Cmd+A (SUPER+a) → CSI u: ESC[97;9u
+        let ev = key(KeyCode::Char('a'), KeyModifiers::SUPER);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[97;9u");
+    }
+
+    #[test]
+    fn test_cmd_right() {
+        // Cmd+Right → modified arrow: ESC[1;9C
+        let ev = key(KeyCode::Right, KeyModifiers::SUPER);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[1;9C");
+    }
+
+    #[test]
+    fn test_shift_cmd_right() {
+        // Shift+Cmd+Right → modified arrow: ESC[1;10C  (1 + shift:1 + super:8 = 10)
+        let ev = key(KeyCode::Right, KeyModifiers::SHIFT | KeyModifiers::SUPER);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[1;10C");
+    }
+
+    #[test]
+    fn test_shift_enter_legacy() {
+        // Shift+Enter in legacy mode → CSI u: ESC[13;2u
+        let ev = key(KeyCode::Enter, KeyModifiers::SHIFT);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[13;2u");
+    }
+
+    #[test]
+    fn test_shift_enter_enhanced() {
+        // Shift+Enter in enhanced mode → CSI u: ESC[13;2u
+        let ev = key(KeyCode::Enter, KeyModifiers::SHIFT);
+        let bytes = key_to_bytes(&ev, false, true);
+        assert_eq!(bytes, b"\x1b[13;2u");
+    }
+
+    // --- Unmodified ambiguous keys: legacy vs enhanced ---
+
+    #[test]
+    fn test_enter_legacy() {
+        let ev = key(KeyCode::Enter, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![b'\r']);
+    }
+
+    #[test]
+    fn test_enter_enhanced() {
+        // Enhanced mode: unmodified Enter → CSI u: ESC[13u
+        let ev = key(KeyCode::Enter, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, true);
+        assert_eq!(bytes, b"\x1b[13u");
+    }
+
+    #[test]
+    fn test_tab_legacy() {
+        let ev = key(KeyCode::Tab, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![b'\t']);
+    }
+
+    #[test]
+    fn test_tab_enhanced() {
+        let ev = key(KeyCode::Tab, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, true);
+        assert_eq!(bytes, b"\x1b[9u");
+    }
+
+    #[test]
+    fn test_esc_legacy() {
+        let ev = key(KeyCode::Esc, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![0x1b]);
+    }
+
+    #[test]
+    fn test_esc_enhanced() {
+        let ev = key(KeyCode::Esc, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, true);
+        assert_eq!(bytes, b"\x1b[27u");
+    }
+
+    #[test]
+    fn test_backspace_legacy() {
+        let ev = key(KeyCode::Backspace, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![0x7f]);
+    }
+
+    #[test]
+    fn test_backspace_enhanced() {
+        let ev = key(KeyCode::Backspace, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, true);
+        assert_eq!(bytes, b"\x1b[127u");
+    }
+
+    // --- Modified special keys ---
+
+    #[test]
+    fn test_ctrl_shift_t() {
+        // Ctrl+Shift+T → CSI u: ESC[116;6u  (codepoint 116 = 't', mod 6 = 1+1+4)
+        let ev = key(
+            KeyCode::Char('T'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[116;6u");
+    }
+
+    #[test]
+    fn test_ctrl_c() {
+        // Ctrl+C → legacy: 0x03
+        let ev = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![0x03]);
+    }
+
+    #[test]
+    fn test_alt_a() {
+        // Alt+A → legacy: ESC + a
+        let ev = key(KeyCode::Char('a'), KeyModifiers::ALT);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![0x1b, b'a']);
+    }
+
+    #[test]
+    fn test_shift_tab_legacy() {
+        // Shift+Tab → legacy BackTab
+        let ev = key(KeyCode::Tab, KeyModifiers::SHIFT);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![0x1b, b'[', b'Z']);
+    }
+
+    #[test]
+    fn test_ctrl_tab() {
+        // Ctrl+Tab → CSI u: ESC[9;5u
+        let ev = key(KeyCode::Tab, KeyModifiers::CONTROL);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[9;5u");
+    }
+
+    #[test]
+    fn test_ctrl_enter() {
+        // Ctrl+Enter → CSI u: ESC[13;5u
+        let ev = key(KeyCode::Enter, KeyModifiers::CONTROL);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[13;5u");
+    }
+
+    #[test]
+    fn test_cmd_enter() {
+        // Cmd+Enter → CSI u: ESC[13;9u
+        let ev = key(KeyCode::Enter, KeyModifiers::SUPER);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[13;9u");
+    }
+
+    // --- Arrow keys with modifiers ---
+
+    #[test]
+    fn test_shift_up() {
+        let ev = key(KeyCode::Up, KeyModifiers::SHIFT);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[1;2A");
+    }
+
+    #[test]
+    fn test_ctrl_right() {
+        let ev = key(KeyCode::Right, KeyModifiers::CONTROL);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[1;5C");
+    }
+
+    // --- Plain keys (no regressions) ---
+
+    #[test]
+    fn test_plain_a() {
+        let ev = key(KeyCode::Char('a'), KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![b'a']);
+    }
+
+    #[test]
+    fn test_plain_enter() {
+        let ev = key(KeyCode::Enter, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, vec![b'\r']);
+    }
+
+    #[test]
+    fn test_arrow_up_normal() {
+        let ev = key(KeyCode::Up, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[A");
+    }
+
+    #[test]
+    fn test_arrow_up_app_cursor() {
+        let ev = key(KeyCode::Up, KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, true, false);
+        assert_eq!(bytes, b"\x1bOA");
+    }
+
+    #[test]
+    fn test_f1_plain() {
+        let ev = key(KeyCode::F(1), KeyModifiers::NONE);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1bOP");
+    }
+
+    #[test]
+    fn test_f5_ctrl() {
+        let ev = key(KeyCode::F(5), KeyModifiers::CONTROL);
+        let bytes = key_to_bytes(&ev, false, false);
+        assert_eq!(bytes, b"\x1b[15;5~");
     }
 }

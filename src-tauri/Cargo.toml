@@ -1,6 +1,6 @@
 [package]
 name = "beehive"
-version = "0.1.92"
+version = "0.1.93"
 description = "Orchestrate coding agents across isolated git workspaces"
 authors = ["Mykyta Storozhenko <storozhenkomykyta@gmail.com>"]
 repository = "https://github.com/storozhenko98/beehive"

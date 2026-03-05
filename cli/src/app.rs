@@ -105,10 +105,13 @@ pub struct App {
     pub activity: Option<String>,
     pub update_available: Option<String>,
     pub sidebar_width: u16,
+    /// Whether the outer terminal supports the kitty keyboard enhancement protocol.
+    /// When true, crossterm reports SUPER/META modifiers and key event kinds (press/repeat/release).
+    pub keyboard_enhanced: bool,
 }
 
 impl App {
-    pub fn new(beehive_dir: String) -> Result<Self, String> {
+    pub fn new(beehive_dir: String, keyboard_enhanced: bool) -> Result<Self, String> {
         let config = load_app_config()?;
         let mut app = App {
             beehive_dir,
@@ -126,6 +129,7 @@ impl App {
             activity: None,
             update_available: None,
             sidebar_width: config.sidebar_width,
+            keyboard_enhanced,
         };
         app.load_all(true)?;
         Ok(app)
