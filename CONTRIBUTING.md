@@ -19,7 +19,11 @@ The GitHub CLI must be authenticated: `gh auth login`
 
 - Xcode Command Line Tools: `xcode-select --install`
 
-> **Linux & Windows:** Beehive currently only supports macOS. Tauri v2 supports all three platforms, so porting should be feasible. If you'd like to help, see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for platform-specific requirements. PRs for Linux/Windows support are very welcome.
+### Linux
+
+- Install Tauri system dependencies for your distro: [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+
+> **Windows:** Beehive does not support Windows yet. PRs are welcome.
 
 ### Getting started
 

@@ -19,7 +19,7 @@ export function CliSection() {
           command, no dependencies beyond git and gh. You&apos;ll be asked to
           choose <code className="font-mono text-ctp-text">bh</code> or{" "}
           <code className="font-mono text-ctp-text">beehive</code> as your
-          command name.
+          command name. Supports macOS Apple Silicon and Linux x64.
         </p>
         <div className="bg-ctp-mantle border border-ctp-surface0 rounded-lg p-3.5 px-4 overflow-x-auto">
           <code className="text-[13px] text-ctp-green whitespace-nowrap font-mono">

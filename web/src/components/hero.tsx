@@ -37,7 +37,7 @@ export function Hero() {
           href="https://github.com/storozhenko98/beehive/releases/latest"
           className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl text-[15px] font-semibold bg-ctp-blue text-ctp-crust shadow-[0_0_20px_rgba(137,180,250,0.2),inset_0_1px_0_rgba(255,255,255,0.1)] hover:bg-ctp-sapphire hover:shadow-[0_0_30px_rgba(137,180,250,0.3)] hover:-translate-y-px transition-all"
         >
-          Download for macOS
+          Download Desktop App
         </a>
         <a
           href="https://github.com/storozhenko98/beehive"
@@ -61,9 +61,9 @@ export function Hero() {
 
       {/* Meta info */}
       <p className="text-[13px] text-ctp-overlay0">
-        <span>Apple Silicon</span>
+        <span>macOS (Apple Silicon) + Linux x64</span>
         <span className="before:content-['·'] before:mx-2 before:text-ctp-surface1">
-          Signed &amp; Notarized
+          Signed &amp; notarized on macOS
         </span>
         <span className="before:content-['·'] before:mx-2 before:text-ctp-surface1">
           GUI + TUI share config

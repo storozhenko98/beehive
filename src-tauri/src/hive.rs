@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -140,7 +139,9 @@ pub async fn preflight_check() -> Result<PreflightResult, String> {
         }
         Err(_) => {
             result.ok = false;
-            result.messages.push("git is not installed. Install it from https://git-scm.com".to_string());
+            result
+                .messages
+                .push("git is not installed. Install it from https://git-scm.com".to_string());
         }
     }
 
@@ -153,7 +154,9 @@ pub async fn preflight_check() -> Result<PreflightResult, String> {
         }
         Err(_) => {
             result.ok = false;
-            result.messages.push("gh CLI is not installed. Install it from https://cli.github.com".to_string());
+            result.messages.push(
+                "gh CLI is not installed. Install it from https://cli.github.com".to_string(),
+            );
         }
     }
 
@@ -166,7 +169,9 @@ pub async fn preflight_check() -> Result<PreflightResult, String> {
             }
             Err(_) => {
                 result.ok = false;
-                result.messages.push("gh is not authenticated. Run: gh auth login".to_string());
+                result
+                    .messages
+                    .push("gh is not authenticated. Run: gh auth login".to_string());
             }
         }
     }
@@ -201,10 +206,13 @@ pub async fn get_home_dir() -> Result<String, String> {
 pub async fn load_app_config() -> Result<AppConfig, String> {
     let path = app_config_path();
     if !path.exists() {
-        return Ok(AppConfig { beehive_dir: None, cli_command: None });
+        return Ok(AppConfig {
+            beehive_dir: None,
+            cli_command: None,
+        });
     }
-    let data = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read app config: {}", e))?;
+    let data =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read app config: {}", e))?;
     serde_json::from_str(&data).map_err(|e| format!("Failed to parse app config: {}", e))
 }
 
@@ -212,11 +220,10 @@ pub async fn load_app_config() -> Result<AppConfig, String> {
 pub async fn save_app_config(config: AppConfig) -> Result<(), String> {
     let path = app_config_path();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create ~/.beehive: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create ~/.beehive: {}", e))?;
     }
-    let json = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("Failed to serialize: {}", e))?;
     fs::write(&path, json).map_err(|e| format!("Failed to write app config: {}", e))
 }
 
@@ -260,9 +267,7 @@ fn list_dir_entries(dir: &std::path::Path) -> Result<Vec<DirEntry>, String> {
 
     let mut results: Vec<DirEntry> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
-        })
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
         .filter(|e| {
             // Hide hidden dirs unless parent is home
             let name = e.file_name().to_string_lossy().to_string();
@@ -303,8 +308,8 @@ pub async fn load_beehive(dir: String) -> Result<BeehiveConfig, String> {
     if !config_path.exists() {
         return Err("No beehive.json found".to_string());
     }
-    let data = fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read config: {}", e))?;
+    let data =
+        fs::read_to_string(&config_path).map_err(|e| format!("Failed to read config: {}", e))?;
     serde_json::from_str(&data).map_err(|e| format!("Failed to parse config: {}", e))
 }
 
@@ -314,8 +319,17 @@ pub async fn verify_repo(repo_url: String) -> Result<HiveInfo, String> {
 
     // Use gh to get repo info
     let repo_spec = format!("{}/{}", owner, repo_name);
-    let json_output = run_cmd("gh", &["repo", "view", &repo_spec, "--json", "name,owner,description,defaultBranchRef,sshUrl,url"])
-        .map_err(|e| format!("Cannot access repo '{}': {}", repo_spec, e))?;
+    let json_output = run_cmd(
+        "gh",
+        &[
+            "repo",
+            "view",
+            &repo_spec,
+            "--json",
+            "name,owner,description,defaultBranchRef,sshUrl,url",
+        ],
+    )
+    .map_err(|e| format!("Cannot access repo '{}': {}", repo_spec, e))?;
 
     let parsed: serde_json::Value = serde_json::from_str(&json_output)
         .map_err(|e| format!("Failed to parse gh output: {}", e))?;
@@ -341,11 +355,12 @@ pub async fn verify_repo(repo_url: String) -> Result<HiveInfo, String> {
     };
 
     // Verify the repo is actually cloneable with git ls-remote
-    run_cmd("git", &["ls-remote", "--heads", &clone_url])
-        .map_err(|e| format!(
+    run_cmd("git", &["ls-remote", "--heads", &clone_url]).map_err(|e| {
+        format!(
             "Repository '{}' is not accessible via git. Check your SSH keys or credentials.\n{}",
             repo_spec, e
-        ))?;
+        )
+    })?;
 
     let dir_name = format!("repo_{}", repo_name);
 
@@ -389,8 +404,8 @@ pub async fn create_hive(beehive_dir: String, repo_url: String) -> Result<HiveIn
         info: info.clone(),
         combs: vec![],
     };
-    let state_json = serde_json::to_string_pretty(&state)
-        .map_err(|e| format!("Failed to serialize: {}", e))?;
+    let state_json =
+        serde_json::to_string_pretty(&state).map_err(|e| format!("Failed to serialize: {}", e))?;
 
     if let Err(e) = fs::write(dot_hive.join("state.json"), &state_json) {
         // Clean up on failure
@@ -457,18 +472,29 @@ pub async fn delete_hive(beehive_dir: String, dir_name: String) -> Result<(), St
 }
 
 #[tauri::command]
-pub async fn list_branches(beehive_dir: String, dir_name: String) -> Result<Vec<RepoBranch>, String> {
+pub async fn list_branches(
+    beehive_dir: String,
+    dir_name: String,
+) -> Result<Vec<RepoBranch>, String> {
     let state = load_hive_state(&beehive_dir, &dir_name)?;
     let repo_spec = format!("{}/{}", state.info.owner, state.info.repo_name);
 
-    let output = run_cmd("gh", &[
-        "api",
-        &format!("repos/{}/branches?per_page=100", repo_spec),
-        "--paginate",
-        "--jq", ".[].name",
-    ]).map_err(|e| format!("Failed to list branches: {}", e))?;
+    let output = run_cmd(
+        "gh",
+        &[
+            "api",
+            &format!("repos/{}/branches?per_page=100", repo_spec),
+            "--paginate",
+            "--jq",
+            ".[].name",
+        ],
+    )
+    .map_err(|e| format!("Failed to list branches: {}", e))?;
 
-    let default_branch = state.info.default_branch.unwrap_or_else(|| "main".to_string());
+    let default_branch = state
+        .info
+        .default_branch
+        .unwrap_or_else(|| "main".to_string());
 
     let branches: Vec<RepoBranch> = output
         .lines()
@@ -695,8 +721,13 @@ fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String>
     if name.starts_with('.') || name.starts_with('-') {
         return Err("Comb name cannot start with '.' or '-'".to_string());
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return Err("Comb name can only contain letters, numbers, hyphens, and underscores".to_string());
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(
+            "Comb name can only contain letters, numbers, hyphens, and underscores".to_string(),
+        );
     }
     if name == ".hive" {
         return Err("'.hive' is a reserved name".to_string());
@@ -708,8 +739,7 @@ fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String>
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst)
-        .map_err(|e| format!("Failed to create directory {:?}: {}", dst, e))?;
+    fs::create_dir_all(dst).map_err(|e| format!("Failed to create directory {:?}: {}", dst, e))?;
     for entry in fs::read_dir(src).map_err(|e| format!("Failed to read {:?}: {}", src, e))? {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let src_path = entry.path();
@@ -747,7 +777,10 @@ pub async fn copy_comb(
     let new_dir = hive_dir.join(&new_name);
 
     if !source_dir.exists() {
-        return Err(format!("Source comb directory does not exist: {}", source.path));
+        return Err(format!(
+            "Source comb directory does not exist: {}",
+            source.path
+        ));
     }
 
     copy_dir_recursive(source_dir, &new_dir)?;
@@ -776,6 +809,38 @@ pub struct CliStatusResult {
     pub path: Option<String>,
 }
 
+fn cli_release_asset_name() -> Result<&'static str, String> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("beehive-tui-darwin-arm64"),
+        ("linux", "x86_64") => Ok("beehive-tui-linux-x64"),
+        (os, arch) => Err(format!(
+            "CLI install is not supported on {} {} yet",
+            os, arch
+        )),
+    }
+}
+
+fn preferred_cli_bin_dir() -> Result<PathBuf, String> {
+    match std::env::consts::OS {
+        "macos" => Ok(PathBuf::from("/usr/local/bin")),
+        "linux" => dirs::home_dir()
+            .map(|home| home.join(".local/bin"))
+            .ok_or_else(|| "Could not determine home directory".to_string()),
+        os => Err(format!("CLI install is not supported on {} yet", os)),
+    }
+}
+
+fn cli_candidate_paths(cmd_name: &str) -> Result<Vec<PathBuf>, String> {
+    let mut paths = vec![preferred_cli_bin_dir()?.join(cmd_name)];
+    if std::env::consts::OS == "linux" {
+        let fallback = PathBuf::from("/usr/local/bin").join(cmd_name);
+        if !paths.contains(&fallback) {
+            paths.push(fallback);
+        }
+    }
+    Ok(paths)
+}
+
 #[tauri::command]
 pub async fn install_cli(cmd_name: String) -> Result<String, String> {
     // Validate command name
@@ -784,11 +849,13 @@ pub async fn install_cli(cmd_name: String) -> Result<String, String> {
     }
 
     let version = env!("CARGO_PKG_VERSION");
+    let asset = cli_release_asset_name()?;
     let url = format!(
-        "https://github.com/storozhenko98/beehive/releases/download/v{}/beehive-tui-darwin-arm64",
-        version
+        "https://github.com/storozhenko98/beehive/releases/download/v{}/{}",
+        version, asset
     );
-    let install_path = format!("/usr/local/bin/{}", cmd_name);
+    let install_dir = preferred_cli_bin_dir()?;
+    let install_path = install_dir.join(&cmd_name);
 
     // Download to temp file
     let tmp = std::env::temp_dir().join("beehive-cli-install");
@@ -800,7 +867,10 @@ pub async fn install_cli(cmd_name: String) -> Result<String, String> {
     if !output.status.success() {
         return Err(format!(
             "Download failed: {}",
-            String::from_utf8_lossy(&output.stderr).lines().next().unwrap_or("unknown error")
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or("unknown error")
         ));
     }
 
@@ -811,24 +881,27 @@ pub async fn install_cli(cmd_name: String) -> Result<String, String> {
         let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755));
     }
 
-    // Ensure /usr/local/bin exists
-    let parent = Path::new("/usr/local/bin");
-    if !parent.exists() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create /usr/local/bin: {}", e))?;
+    // Ensure install dir exists
+    if !install_dir.exists() {
+        fs::create_dir_all(&install_dir)
+            .map_err(|e| format!("Failed to create {}: {}", install_dir.display(), e))?;
     }
 
     // Remove any existing file at the target path
-    let dest = Path::new(&install_path);
-    if dest.exists() || dest.symlink_metadata().is_ok() {
-        fs::remove_file(dest)
-            .map_err(|e| format!("Failed to remove existing {}: {}. Try: sudo rm {}", install_path, e, install_path))?;
+    if install_path.exists() || install_path.symlink_metadata().is_ok() {
+        fs::remove_file(&install_path).map_err(|e| {
+            format!(
+                "Failed to remove existing {}: {}",
+                install_path.display(),
+                e
+            )
+        })?;
     }
 
     // Move binary into place
     fs::rename(&tmp, &install_path)
         .or_else(|_| fs::copy(&tmp, &install_path).map(|_| ()))
-        .map_err(|e| format!("Failed to install to {}: {}. Check permissions.", install_path, e))?;
+        .map_err(|e| format!("Failed to install to {}: {}", install_path.display(), e))?;
     let _ = fs::remove_file(&tmp);
 
     // Save command name preference to config
@@ -836,7 +909,7 @@ pub async fn install_cli(cmd_name: String) -> Result<String, String> {
     config.cli_command = Some(cmd_name.clone());
     save_app_config(config).await?;
 
-    Ok(install_path)
+    Ok(install_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -846,23 +919,27 @@ pub async fn uninstall_cli() -> Result<(), String> {
     let mut removed = false;
 
     if let Some(ref name) = config.cli_command {
-        let path = format!("/usr/local/bin/{}", name);
-        let p = Path::new(&path);
-        if p.exists() {
-            fs::remove_file(p)
-                .map_err(|e| format!("Failed to remove {}: {}. Try: sudo rm {}", path, e, path))?;
-            removed = true;
+        for path in cli_candidate_paths(name)? {
+            if path.exists() {
+                fs::remove_file(&path)
+                    .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+                removed = true;
+            }
         }
     }
 
     // Also check the other name as fallback
     if !removed {
         for name in &["bh", "beehive"] {
-            let path = format!("/usr/local/bin/{}", name);
-            let p = Path::new(&path);
-            if p.exists() {
-                fs::remove_file(p)
-                    .map_err(|e| format!("Failed to remove {}: {}. Try: sudo rm {}", path, e, path))?;
+            for path in cli_candidate_paths(name)? {
+                if path.exists() {
+                    fs::remove_file(&path)
+                        .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+                    removed = true;
+                    break;
+                }
+            }
+            if removed {
                 break;
             }
         }
@@ -882,25 +959,27 @@ pub async fn cli_status() -> Result<CliStatusResult, String> {
 
     // Check config preference first
     if let Some(ref name) = config.cli_command {
-        let path = format!("/usr/local/bin/{}", name);
-        if Path::new(&path).exists() {
-            return Ok(CliStatusResult {
-                installed: true,
-                cmd_name: Some(name.clone()),
-                path: Some(path),
-            });
+        for path in cli_candidate_paths(name)? {
+            if path.exists() {
+                return Ok(CliStatusResult {
+                    installed: true,
+                    cmd_name: Some(name.clone()),
+                    path: Some(path.to_string_lossy().to_string()),
+                });
+            }
         }
     }
 
     // Fallback: check both names
     for name in &["bh", "beehive"] {
-        let path = format!("/usr/local/bin/{}", name);
-        if Path::new(&path).exists() {
-            return Ok(CliStatusResult {
-                installed: true,
-                cmd_name: Some(name.to_string()),
-                path: Some(path),
-            });
+        for path in cli_candidate_paths(name)? {
+            if path.exists() {
+                return Ok(CliStatusResult {
+                    installed: true,
+                    cmd_name: Some(name.to_string()),
+                    path: Some(path.to_string_lossy().to_string()),
+                });
+            }
         }
     }
 
@@ -918,29 +997,36 @@ fn parse_repo_url(url: &str) -> Result<(String, String), String> {
     //         https://github.com/owner/repo.git
     //         https://github.com/owner/repo
     //         owner/repo
-    let cleaned = url
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches(".git");
+    let cleaned = url.trim().trim_end_matches('/').trim_end_matches(".git");
 
     let (owner, repo_name) = if cleaned.contains(':') && cleaned.starts_with("git@") {
         // SSH format: git@github.com:owner/repo
-        let after_colon = cleaned.split(':').last()
-            .ok_or("Invalid SSH URL format")?;
+        let after_colon = cleaned.split(':').last().ok_or("Invalid SSH URL format")?;
         let parts: Vec<&str> = after_colon.split('/').collect();
         if parts.len() >= 2 {
-            (parts[parts.len() - 2].to_string(), parts[parts.len() - 1].to_string())
+            (
+                parts[parts.len() - 2].to_string(),
+                parts[parts.len() - 1].to_string(),
+            )
         } else {
-            return Err(format!("Cannot parse SSH URL: {}. Expected format: git@github.com:owner/repo", url));
+            return Err(format!(
+                "Cannot parse SSH URL: {}. Expected format: git@github.com:owner/repo",
+                url
+            ));
         }
     } else if cleaned.contains("github.com/") {
-        let after_gh = cleaned.split("github.com/").last()
+        let after_gh = cleaned
+            .split("github.com/")
+            .last()
             .ok_or("Invalid GitHub URL")?;
         let parts: Vec<&str> = after_gh.split('/').collect();
         if parts.len() >= 2 {
             (parts[0].to_string(), parts[1].to_string())
         } else {
-            return Err(format!("Cannot parse GitHub URL: {}. Expected format: https://github.com/owner/repo", url));
+            return Err(format!(
+                "Cannot parse GitHub URL: {}. Expected format: https://github.com/owner/repo",
+                url
+            ));
         }
     } else {
         // Try owner/repo format
@@ -948,7 +1034,10 @@ fn parse_repo_url(url: &str) -> Result<(String, String), String> {
         if parts.len() == 2 {
             (parts[0].to_string(), parts[1].to_string())
         } else {
-            return Err(format!("Cannot parse '{}'. Use owner/repo, a GitHub URL, or SSH URL.", url));
+            return Err(format!(
+                "Cannot parse '{}'. Use owner/repo, a GitHub URL, or SSH URL.",
+                url
+            ));
         }
     };
 
@@ -968,8 +1057,8 @@ fn load_hive_state(beehive_dir: &str, dir_name: &str) -> Result<HiveState, Strin
         .join(dir_name)
         .join(".hive")
         .join("state.json");
-    let data = fs::read_to_string(&state_path)
-        .map_err(|e| format!("Failed to read hive state: {}", e))?;
+    let data =
+        fs::read_to_string(&state_path).map_err(|e| format!("Failed to read hive state: {}", e))?;
     serde_json::from_str(&data).map_err(|e| format!("Failed to parse hive state: {}", e))
 }
 
@@ -978,8 +1067,8 @@ fn save_hive_state(beehive_dir: &str, dir_name: &str, state: &HiveState) -> Resu
         .join(dir_name)
         .join(".hive")
         .join("state.json");
-    let json = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("Failed to serialize: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(state).map_err(|e| format!("Failed to serialize: {}", e))?;
     fs::write(&state_path, json).map_err(|e| format!("Failed to write state: {}", e))
 }
 

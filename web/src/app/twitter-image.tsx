@@ -77,7 +77,7 @@ export default async function TwitterImage() {
             marginTop: 40,
           }}
         >
-          {["macOS", "GUI + TUI", "Open Source"].map((label) => (
+          {["macOS + Linux", "GUI + TUI", "Open Source"].map((label) => (
             <div
               key={label}
               style={{

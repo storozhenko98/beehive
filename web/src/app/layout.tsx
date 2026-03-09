@@ -53,6 +53,7 @@ export const metadata: Metadata = {
     "Claude Code",
     "developer tools",
     "macOS",
+    "Linux",
   ],
   authors: [{ name: "Mykyta Storozhenko", url: "https://storozh.dev" }],
 };

@@ -80,7 +80,7 @@ export default async function OGImage() {
             marginTop: 40,
           }}
         >
-          {["macOS", "GUI + TUI", "Open Source"].map((label) => (
+          {["macOS + Linux", "GUI + TUI", "Open Source"].map((label) => (
             <div
               key={label}
               style={{

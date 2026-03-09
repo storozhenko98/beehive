@@ -298,7 +298,7 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
                   beehive
                 </button>
                 <span style={{ color: "var(--text-muted)", fontSize: 11, alignSelf: "center" }}>
-                  installed as /usr/local/bin/{cliChoice}
+                  installs to /usr/local/bin on macOS or ~/.local/bin on Linux
                 </span>
               </div>
               <button

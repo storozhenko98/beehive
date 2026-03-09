@@ -8,9 +8,9 @@ Beehive lets you manage multiple repos, create isolated workspace clones on diff
 
 ## Install
 
-### Desktop App (macOS)
+### Desktop App (macOS / Linux)
 
-Download the latest `.dmg` from [Releases](https://github.com/storozhenko98/beehive/releases/latest). Signed and notarized for Apple Silicon.
+Download the latest desktop build from [Releases](https://github.com/storozhenko98/beehive/releases/latest): `.dmg` for macOS Apple Silicon, plus `.AppImage` and `.deb` for Linux x64.
 
 ### TUI
 
@@ -61,8 +61,6 @@ You'll be asked to choose `bh` or `beehive` as your command name. Auto-updates o
 ```bash
 gh auth login   # Required — Beehive uses gh for repo operations
 ```
-
-> **Note:** macOS only for now. Linux and Windows support is planned — contributions welcome.
 
 ## Building from Source
 
@@ -155,7 +153,7 @@ The GUI and TUI share the same config and data — you can use both interchangea
 |----------|-----|-----|
 | **macOS** (Apple Silicon) | Signed & notarized | Supported |
 | **macOS** (Intel) | Should work (untested) | Should work (untested) |
-| **Linux** | Not yet | Not yet |
+| **Linux** (x64) | Supported | Supported |
 | **Windows** | Not yet | Not yet |
 
 ## Contributing
