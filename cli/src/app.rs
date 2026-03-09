@@ -31,6 +31,37 @@ pub enum NavItem {
     },
 }
 
+#[derive(Clone)]
+enum NavItemKey {
+    Hive { dir_name: String },
+    Comb { id: String },
+}
+
+#[derive(Clone)]
+pub struct CombFinderTarget {
+    pub hive_dir_name: String,
+    pub hive_repo_name: String,
+    pub comb_id: String,
+    pub comb_name: String,
+    pub branch: String,
+}
+
+pub fn filter_comb_finder_targets<'a>(
+    targets: &'a [CombFinderTarget],
+    filter: &str,
+) -> Vec<&'a CombFinderTarget> {
+    let filter = filter.trim().to_lowercase();
+    targets
+        .iter()
+        .filter(|target| {
+            filter.is_empty()
+                || target.comb_name.to_lowercase().contains(&filter)
+                || target.branch.to_lowercase().contains(&filter)
+                || target.hive_repo_name.to_lowercase().contains(&filter)
+        })
+        .collect()
+}
+
 pub enum AppMode {
     Normal,
     Input {
@@ -53,8 +84,15 @@ pub enum AppMode {
     /// Reordering a comb within its hive. Up/Down to move, m/Enter to confirm, Esc to cancel.
     MovingComb {
         hive_dir_name: String,
+        moving_comb_id: String,
         /// Snapshot of items before moving started, for Esc cancel.
         original_items: Vec<NavItem>,
+        original_selected: usize,
+    },
+    CombFinder {
+        targets: Vec<CombFinderTarget>,
+        filter: String,
+        selected: usize,
     },
     Help,
     Settings {
@@ -117,6 +155,151 @@ pub struct App {
 }
 
 impl App {
+    fn selected_item_key(&self) -> Option<NavItemKey> {
+        self.items.get(self.selected).map(|item| match item {
+            NavItem::Hive { info, .. } => NavItemKey::Hive {
+                dir_name: info.dir_name.clone(),
+            },
+            NavItem::Comb { comb, .. } => NavItemKey::Comb {
+                id: comb.id.clone(),
+            },
+        })
+    }
+
+    fn find_item_index(items: &[NavItem], key: &NavItemKey) -> Option<usize> {
+        items.iter().position(|item| match (item, key) {
+            (NavItem::Hive { info, .. }, NavItemKey::Hive { dir_name }) => {
+                info.dir_name == *dir_name
+            }
+            (NavItem::Comb { comb, .. }, NavItemKey::Comb { id }) => comb.id == *id,
+            _ => false,
+        })
+    }
+
+    fn sync_selection_to_items(&mut self, items: &[NavItem]) {
+        if items.is_empty() {
+            self.selected = 0;
+            return;
+        }
+
+        if let Some(key) = self.selected_item_key() {
+            if let Some(index) = Self::find_item_index(items, &key) {
+                self.selected = index;
+                return;
+            }
+        }
+
+        if self.selected >= items.len() {
+            self.selected = items.len() - 1;
+        }
+    }
+
+    pub fn has_cloning_comb(&self) -> bool {
+        self.items.iter().any(|item| match item {
+            NavItem::Comb { comb, .. } => comb.cloning,
+            _ => false,
+        })
+    }
+
+    fn find_hive_index(&self, hive_dir_name: &str) -> Option<usize> {
+        self.items.iter().position(|item| match item {
+            NavItem::Hive { info, .. } => info.dir_name == hive_dir_name,
+            _ => false,
+        })
+    }
+
+    fn expand_hive_at(&mut self, hive_index: usize) -> Result<(), String> {
+        let (info, expanded, comb_count) = match &self.items[hive_index] {
+            NavItem::Hive {
+                info,
+                expanded,
+                comb_count,
+            } => (info.clone(), *expanded, *comb_count),
+            NavItem::Comb { .. } => return Ok(()),
+        };
+
+        if expanded {
+            return Ok(());
+        }
+
+        self.items[hive_index] = NavItem::Hive {
+            info: info.clone(),
+            expanded: true,
+            comb_count,
+        };
+
+        let combs = get_combs(&self.beehive_dir, &info.dir_name)?;
+        for (offset, comb) in combs.into_iter().enumerate() {
+            self.items.insert(
+                hive_index + 1 + offset,
+                NavItem::Comb {
+                    hive_dir_name: info.dir_name.clone(),
+                    comb,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn reveal_comb(&mut self, hive_dir_name: &str, comb_id: &str) -> Result<bool, String> {
+        if self.select_comb_by_id(comb_id) {
+            return Ok(true);
+        }
+
+        let Some(hive_index) = self.find_hive_index(hive_dir_name) else {
+            return Ok(false);
+        };
+
+        self.expand_hive_at(hive_index)?;
+        Ok(self.select_comb_by_id(comb_id))
+    }
+
+    pub fn start_comb_finder(&mut self) {
+        let mut targets = Vec::new();
+        let hives = match list_hives(&self.beehive_dir) {
+            Ok(hives) => hives,
+            Err(e) => {
+                self.status_message = Some(format!("Failed to load combs: {}", e));
+                return;
+            }
+        };
+
+        for info in hives {
+            let combs = match get_combs(&self.beehive_dir, &info.dir_name) {
+                Ok(combs) => combs,
+                Err(e) => {
+                    self.status_message = Some(format!("Failed to load combs: {}", e));
+                    return;
+                }
+            };
+
+            for comb in combs {
+                if comb.cloning {
+                    continue;
+                }
+                targets.push(CombFinderTarget {
+                    hive_dir_name: info.dir_name.clone(),
+                    hive_repo_name: info.repo_name.clone(),
+                    comb_id: comb.id,
+                    comb_name: comb.name,
+                    branch: comb.branch,
+                });
+            }
+        }
+
+        if targets.is_empty() {
+            self.status_message = Some("No combs to jump to".to_string());
+            return;
+        }
+
+        self.mode = AppMode::CombFinder {
+            targets,
+            filter: String::new(),
+            selected: 0,
+        };
+    }
+
     pub fn new(beehive_dir: String, keyboard_enhanced: bool) -> Result<Self, String> {
         let config = load_app_config()?;
         let mut app = App {
@@ -181,12 +364,7 @@ impl App {
             }
         }
 
-        if self.selected >= items.len() && !items.is_empty() {
-            self.selected = items.len() - 1;
-        }
-        if items.is_empty() {
-            self.selected = 0;
-        }
+        self.sync_selection_to_items(&items);
         self.items = items;
         Ok(())
     }
@@ -224,12 +402,7 @@ impl App {
             }
         }
 
-        if self.selected >= items.len() && !items.is_empty() {
-            self.selected = items.len() - 1;
-        }
-        if items.is_empty() {
-            self.selected = 0;
-        }
+        self.sync_selection_to_items(&items);
         self.items = items;
     }
 
@@ -436,8 +609,8 @@ impl App {
     }
 
     pub fn start_move_comb(&mut self) {
-        if self.pending_clone.is_some() {
-            self.status_message = Some("Wait for current operation to finish".to_string());
+        if self.pending_clone.is_some() || self.has_cloning_comb() {
+            self.status_message = Some("Wait for the current comb add to finish".to_string());
             return;
         }
         if self.items.is_empty() {
@@ -453,10 +626,13 @@ impl App {
                 return;
             }
             let hive_dir_name = hive_dir_name.clone();
+            let moving_comb_id = comb.id.clone();
             let original_items = self.items.clone();
             self.mode = AppMode::MovingComb {
                 hive_dir_name,
+                moving_comb_id,
                 original_items,
+                original_selected: self.selected,
             };
         } else {
             self.status_message = Some("Select a comb to move".to_string());
@@ -511,6 +687,18 @@ impl App {
             }
         }
         false
+    }
+
+    pub fn select_comb_by_id(&mut self, comb_id: &str) -> bool {
+        if let Some(index) = self.items.iter().position(|item| match item {
+            NavItem::Comb { comb, .. } => comb.id == comb_id,
+            _ => false,
+        }) {
+            self.selected = index;
+            true
+        } else {
+            false
+        }
     }
 
     /// Extract the current comb ID order for a given hive from the flat items list.
@@ -592,6 +780,121 @@ impl App {
         match &self.items[self.selected] {
             NavItem::Hive { info, .. } => Some(info.dir_name.clone()),
             NavItem::Comb { hive_dir_name, .. } => Some(hive_dir_name.clone()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hive(dir_name: &str, repo_name: &str) -> HiveInfo {
+        HiveInfo {
+            dir_name: dir_name.to_string(),
+            repo_url: format!("https://github.com/acme/{}.git", repo_name),
+            repo_name: repo_name.to_string(),
+            owner: "acme".to_string(),
+            description: None,
+            default_branch: Some("main".to_string()),
+            custom_buttons: vec![],
+        }
+    }
+
+    fn comb(id: &str, name: &str, branch: &str) -> Comb {
+        Comb {
+            id: id.to_string(),
+            name: name.to_string(),
+            branch: branch.to_string(),
+            path: format!("/tmp/{}", name),
+            created_at: "0".to_string(),
+            panes: vec![],
+            cloning: false,
+        }
+    }
+
+    fn make_app(items: Vec<NavItem>, selected: usize) -> App {
+        App {
+            beehive_dir: "/tmp/beehive".to_string(),
+            items,
+            selected,
+            mode: AppMode::Normal,
+            should_quit: false,
+            status_message: None,
+            active_comb_id: None,
+            focus: Focus::Sidebar,
+            terminals: HashMap::new(),
+            last_term_size: (0, 0),
+            pending_clone: None,
+            pending_refresh: None,
+            activity: None,
+            update_available: None,
+            sidebar_width: 28,
+            keyboard_enhanced: false,
+        }
+    }
+
+    #[test]
+    fn filter_comb_finder_targets_matches_name_branch_and_hive_case_insensitively() {
+        let targets = vec![
+            CombFinderTarget {
+                hive_dir_name: "repo_api".to_string(),
+                hive_repo_name: "ApiServer".to_string(),
+                comb_id: "1".to_string(),
+                comb_name: "feature-login".to_string(),
+                branch: "fix/auth".to_string(),
+            },
+            CombFinderTarget {
+                hive_dir_name: "repo_web".to_string(),
+                hive_repo_name: "Frontend".to_string(),
+                comb_id: "2".to_string(),
+                comb_name: "homepage".to_string(),
+                branch: "main".to_string(),
+            },
+        ];
+
+        assert_eq!(filter_comb_finder_targets(&targets, "LOGIN").len(), 1);
+        assert_eq!(filter_comb_finder_targets(&targets, "auth").len(), 1);
+        assert_eq!(filter_comb_finder_targets(&targets, "front").len(), 1);
+        assert_eq!(filter_comb_finder_targets(&targets, "").len(), 2);
+    }
+
+    #[test]
+    fn apply_refresh_preserves_selected_comb_by_id() {
+        let selected_comb = comb("b", "beta", "main");
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 2,
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("a", "alpha", "main"),
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: selected_comb.clone(),
+                },
+            ],
+            2,
+        );
+
+        app.apply_refresh(RefreshResult {
+            hive_data: vec![(
+                hive("repo_api", "api"),
+                vec![
+                    comb("x", "aardvark", "main"),
+                    comb("a", "alpha", "main"),
+                    selected_comb,
+                ],
+            )],
+        });
+
+        assert_eq!(app.selected, 3);
+        match &app.items[app.selected] {
+            NavItem::Comb { comb, .. } => assert_eq!(comb.id, "b"),
+            _ => panic!("expected selected comb"),
         }
     }
 }

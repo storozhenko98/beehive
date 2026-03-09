@@ -203,18 +203,23 @@ fn run_app(
         // Check for completed background refresh
         if let Some(slot) = app.pending_refresh.clone() {
             if let Ok(mut guard) = slot.try_lock() {
-                if let Some(result) = guard.take() {
-                    drop(guard);
-                    app.pending_refresh = None;
-                    app.apply_refresh(result);
-                    dirty = true;
+                if !matches!(app.mode, AppMode::MovingComb { .. }) {
+                    if let Some(result) = guard.take() {
+                        drop(guard);
+                        app.pending_refresh = None;
+                        app.apply_refresh(result);
+                        dirty = true;
+                    }
                 }
             }
         }
 
         // Launch async refresh every ~5 seconds (only if not already running)
         tick_count = tick_count.wrapping_add(1);
-        if tick_count % 312 == 0 && app.pending_refresh.is_none() {
+        if tick_count % 312 == 0
+            && app.pending_refresh.is_none()
+            && !matches!(app.mode, AppMode::MovingComb { .. })
+        {
             let slot: Arc<Mutex<Option<RefreshResult>>> = Arc::new(Mutex::new(None));
             let slot_clone = Arc::clone(&slot);
             let beehive_dir = app.beehive_dir.clone();
@@ -358,6 +363,12 @@ fn process_event(
                 {
                     filter.push_str(text);
                     *selected = 0;
+                } else if let AppMode::CombFinder {
+                    filter, selected, ..
+                } = &mut app.mode
+                {
+                    filter.push_str(text);
+                    *selected = 0;
                 }
             }
             _ => {}
@@ -430,6 +441,10 @@ fn handle_key(
             handle_branch_picker(app, key, terminal)?;
             return Ok(());
         }
+        AppMode::CombFinder { .. } => {
+            handle_comb_finder(app, key)?;
+            return Ok(());
+        }
         AppMode::MovingComb { .. } => {
             handle_moving_comb(app, key)?;
             return Ok(());
@@ -467,6 +482,7 @@ fn handle_key(
                         }
                     }
                     KeyCode::Char('n') => app.start_new_comb(),
+                    KeyCode::Char('f') => app.start_comb_finder(),
                     KeyCode::Char('m') => app.start_move_comb(),
                     KeyCode::Char('c') => app.start_copy_comb(),
                     KeyCode::Char('a') => app.start_add_hive(),
@@ -540,8 +556,94 @@ fn handle_key(
             AppMode::Help
             | AppMode::Settings { .. }
             | AppMode::BranchPicker { .. }
+            | AppMode::CombFinder { .. }
             | AppMode::MovingComb { .. } => {}
         },
+    }
+    Ok(())
+}
+
+fn handle_comb_finder(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::CombFinder {
+                targets,
+                filter,
+                selected,
+            } = &mut app.mode
+            {
+                let filtered_count = app::filter_comb_finder_targets(targets, filter).len();
+                if *selected > 0 {
+                    *selected -= 1;
+                } else if filtered_count > 0 {
+                    *selected = filtered_count - 1;
+                }
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::CombFinder {
+                targets,
+                filter,
+                selected,
+            } = &mut app.mode
+            {
+                let filtered_count = app::filter_comb_finder_targets(targets, filter).len();
+                if *selected + 1 < filtered_count {
+                    *selected += 1;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            let mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            if let AppMode::CombFinder {
+                targets,
+                filter,
+                selected,
+            } = mode
+            {
+                let filtered = app::filter_comb_finder_targets(&targets, &filter);
+                if let Some(target) = filtered.get(selected) {
+                    match app.reveal_comb(&target.hive_dir_name, &target.comb_id) {
+                        Ok(true) => {
+                            app.status_message = Some(format!("Jumped to '{}'", target.comb_name));
+                        }
+                        Ok(false) => {
+                            app.status_message = Some("Comb not found".to_string());
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Jump failed: {}", e));
+                        }
+                    }
+                } else {
+                    app.status_message = Some("No matching combs".to_string());
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::CombFinder {
+                filter, selected, ..
+            } = &mut app.mode
+            {
+                filter.push(c);
+                *selected = 0;
+            }
+        }
+        KeyCode::Backspace => {
+            if let AppMode::CombFinder {
+                filter, selected, ..
+            } = &mut app.mode
+            {
+                filter.pop();
+                *selected = 0;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -648,6 +750,12 @@ fn handle_moving_comb(
     app: &mut App,
     key: crossterm::event::KeyEvent,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let moving_comb_id = match &app.mode {
+        AppMode::MovingComb { moving_comb_id, .. } => moving_comb_id.clone(),
+        _ => return Ok(()),
+    };
+    let _ = app.select_comb_by_id(&moving_comb_id);
+
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
             app.move_comb_up();
@@ -673,11 +781,18 @@ fn handle_moving_comb(
         KeyCode::Esc => {
             // Cancel: restore original item order
             let mode = std::mem::replace(&mut app.mode, AppMode::Normal);
-            if let AppMode::MovingComb { original_items, .. } = mode {
-                // Restore the selected index to a valid position
-                let selected = app.selected.min(original_items.len().saturating_sub(1));
+            if let AppMode::MovingComb {
+                original_items,
+                original_selected,
+                ..
+            } = mode
+            {
                 app.items = original_items;
-                app.selected = selected;
+                app.selected = if app.items.is_empty() {
+                    0
+                } else {
+                    original_selected.min(app.items.len() - 1)
+                };
                 app.status_message = Some("Move cancelled".to_string());
             }
         }
@@ -822,6 +937,143 @@ fn start_async_copy(
     app.pending_clone = Some(slot);
     app.activity = Some(format!("Copying '{}'", comb_name));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn hive(dir_name: &str, repo_name: &str) -> HiveInfo {
+        HiveInfo {
+            dir_name: dir_name.to_string(),
+            repo_url: format!("https://github.com/acme/{}.git", repo_name),
+            repo_name: repo_name.to_string(),
+            owner: "acme".to_string(),
+            description: None,
+            default_branch: Some("main".to_string()),
+            custom_buttons: vec![],
+        }
+    }
+
+    fn comb(id: &str, name: &str, branch: &str) -> Comb {
+        Comb {
+            id: id.to_string(),
+            name: name.to_string(),
+            branch: branch.to_string(),
+            path: format!("/tmp/{}", name),
+            created_at: "0".to_string(),
+            panes: vec![],
+            cloning: false,
+        }
+    }
+
+    fn make_app(items: Vec<app::NavItem>, selected: usize) -> App {
+        App {
+            beehive_dir: "/tmp/beehive".to_string(),
+            items,
+            selected,
+            mode: AppMode::Normal,
+            should_quit: false,
+            status_message: None,
+            active_comb_id: None,
+            focus: Focus::Sidebar,
+            terminals: HashMap::new(),
+            last_term_size: (0, 0),
+            pending_clone: None,
+            pending_refresh: None,
+            activity: None,
+            update_available: None,
+            sidebar_width: 28,
+            keyboard_enhanced: false,
+        }
+    }
+
+    #[test]
+    fn moving_comb_escape_restores_original_selection_and_items() {
+        let original_items = vec![
+            app::NavItem::Hive {
+                info: hive("repo_api", "api"),
+                expanded: true,
+                comb_count: 2,
+            },
+            app::NavItem::Comb {
+                hive_dir_name: "repo_api".to_string(),
+                comb: comb("a", "alpha", "main"),
+            },
+            app::NavItem::Comb {
+                hive_dir_name: "repo_api".to_string(),
+                comb: comb("b", "beta", "main"),
+            },
+        ];
+        let mut moved_items = original_items.clone();
+        moved_items.swap(1, 2);
+
+        let mut app = make_app(moved_items, 1);
+        app.mode = AppMode::MovingComb {
+            hive_dir_name: "repo_api".to_string(),
+            moving_comb_id: "b".to_string(),
+            original_items: original_items.clone(),
+            original_selected: 2,
+        };
+
+        handle_moving_comb(&mut app, crossterm::event::KeyEvent::from(KeyCode::Esc)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert_eq!(app.selected, 2);
+        match &app.items[2] {
+            app::NavItem::Comb { comb, .. } => assert_eq!(comb.id, "b"),
+            _ => panic!("expected selected comb"),
+        }
+    }
+
+    #[test]
+    fn comb_finder_enter_jumps_to_matching_visible_comb() {
+        let mut app = make_app(
+            vec![
+                app::NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 2,
+                },
+                app::NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("a", "alpha", "main"),
+                },
+                app::NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("b", "beta", "main"),
+                },
+            ],
+            0,
+        );
+        app.mode = AppMode::CombFinder {
+            targets: vec![
+                app::CombFinderTarget {
+                    hive_dir_name: "repo_api".to_string(),
+                    hive_repo_name: "api".to_string(),
+                    comb_id: "a".to_string(),
+                    comb_name: "alpha".to_string(),
+                    branch: "main".to_string(),
+                },
+                app::CombFinderTarget {
+                    hive_dir_name: "repo_api".to_string(),
+                    hive_repo_name: "api".to_string(),
+                    comb_id: "b".to_string(),
+                    comb_name: "beta".to_string(),
+                    branch: "main".to_string(),
+                },
+            ],
+            filter: "bet".to_string(),
+            selected: 0,
+        };
+
+        handle_comb_finder(&mut app, crossterm::event::KeyEvent::from(KeyCode::Enter)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.status_message.as_deref(), Some("Jumped to 'beta'"));
+    }
 }
 
 fn handle_input_submit(

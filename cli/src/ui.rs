@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, Focus, NavItem};
+use crate::app::{filter_comb_finder_targets, App, AppMode, Focus, NavItem};
 
 // Catppuccin Mocha
 const BASE: Color = Color::Rgb(30, 30, 46);
@@ -75,6 +75,11 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
             *selected,
             comb_name,
         ),
+        AppMode::CombFinder {
+            targets,
+            filter,
+            selected,
+        } => render_comb_finder(frame, targets, filter, *selected),
         AppMode::Normal | AppMode::MovingComb { .. } => {}
     }
 
@@ -103,8 +108,15 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let left = Paragraph::new(Line::from(left_spans)).style(Style::default().bg(MANTLE));
     frame.render_widget(left, area);
 
-    // Activity spinner (right-aligned in header) — persistent across mode changes
-    if let Some(ref msg) = app.activity {
+    if matches!(app.mode, AppMode::MovingComb { .. }) {
+        let right = Paragraph::new(Line::from(Span::styled(
+            " MOVE MODE - refresh paused ",
+            Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Right)
+        .style(Style::default().bg(MANTLE));
+        frame.render_widget(right, area);
+    } else if let Some(ref msg) = app.activity {
         const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -370,6 +382,31 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(" cancel", Style::default().fg(OVERLAY0)),
             ]),
+            AppMode::CombFinder { .. } => Line::from(vec![
+                Span::styled(
+                    " ↑↓/j/k",
+                    Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" navigate ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " enter",
+                    Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" jump ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " type",
+                    Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" to filter ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " Esc",
+                    Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" cancel", Style::default().fg(OVERLAY0)),
+            ]),
             AppMode::MovingComb { .. } => Line::from(vec![
                 Span::styled(
                     " ↑↓",
@@ -423,6 +460,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                             Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(" copy ", Style::default().fg(OVERLAY0)),
+                        Span::styled("│", Style::default().fg(SURFACE1)),
+                        Span::styled(
+                            " f",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" find ", Style::default().fg(OVERLAY0)),
                         Span::styled("│", Style::default().fg(SURFACE1)),
                         Span::styled(
                             " m",
@@ -499,7 +542,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame) {
-    let area = overlay_rect(60, 23, frame.area());
+    let area = overlay_rect(60, 24, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -545,6 +588,10 @@ fn render_help(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("  c        ", key_style),
             Span::styled("Copy comb (duplicate workspace)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  f        ", key_style),
+            Span::styled("Find and jump to a comb", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  a        ", key_style),
@@ -667,6 +714,95 @@ fn render_branch_picker(
 
     let mut state = ListState::default();
     state.select(Some(selected));
+
+    let list = List::new(items)
+        .style(Style::default().bg(MANTLE))
+        .highlight_style(
+            Style::default()
+                .bg(SURFACE0)
+                .fg(BLUE)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    frame.render_stateful_widget(list, items_area, &mut state);
+}
+
+fn render_comb_finder(
+    frame: &mut Frame,
+    targets: &[crate::app::CombFinderTarget],
+    filter: &str,
+    selected: usize,
+) {
+    let max_h = (frame.area().height - 4).min(18);
+    let area = overlay_rect(70, max_h, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Jump to Comb ")
+        .title_style(Style::default().fg(BLUE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BLUE))
+        .style(Style::default().bg(MANTLE));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 3 {
+        return;
+    }
+
+    let filter_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    let filter_line = Paragraph::new(Line::from(vec![
+        Span::styled(" / ", Style::default().fg(OVERLAY0)),
+        Span::styled(filter, Style::default().fg(TEXT)),
+        Span::styled("_", Style::default().fg(BLUE)),
+    ]))
+    .style(Style::default().bg(SURFACE0));
+    frame.render_widget(filter_line, filter_area);
+
+    let list_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
+    let filtered = filter_comb_finder_targets(targets, filter);
+
+    let count_area = Rect::new(list_area.x, list_area.y, list_area.width, 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {} of {} combs", filtered.len(), targets.len()),
+            Style::default().fg(OVERLAY0),
+        )))
+        .style(Style::default().bg(MANTLE)),
+        count_area,
+    );
+
+    let items_area = Rect::new(
+        list_area.x,
+        list_area.y + 1,
+        list_area.width,
+        list_area.height.saturating_sub(1),
+    );
+
+    let items: Vec<ListItem> = if filtered.is_empty() {
+        vec![ListItem::new(Line::from(vec![Span::styled(
+            "  No matching combs",
+            Style::default().fg(OVERLAY0),
+        )]))]
+    } else {
+        filtered
+            .iter()
+            .map(|target| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("  {}", target.comb_name), Style::default().fg(TEXT)),
+                    Span::styled(format!(" {}", target.branch), Style::default().fg(SUBTEXT0)),
+                    Span::styled(
+                        format!("  - {}", target.hive_repo_name),
+                        Style::default().fg(OVERLAY0),
+                    ),
+                ]))
+            })
+            .collect()
+    };
+
+    let mut state = ListState::default();
+    state.select((!filtered.is_empty()).then_some(selected));
 
     let list = List::new(items)
         .style(Style::default().bg(MANTLE))
