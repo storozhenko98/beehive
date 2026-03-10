@@ -80,7 +80,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
             filter,
             selected,
         } => render_comb_finder(frame, targets, filter, *selected),
-        AppMode::Normal | AppMode::MovingComb { .. } => {}
+        AppMode::Normal | AppMode::MovingComb { .. } | AppMode::DeleteCombSelection { .. } => {}
     }
 
     term_inner
@@ -108,7 +108,21 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let left = Paragraph::new(Line::from(left_spans)).style(Style::default().bg(MANTLE));
     frame.render_widget(left, area);
 
-    if matches!(app.mode, AppMode::MovingComb { .. }) {
+    if matches!(app.mode, AppMode::DeleteCombSelection { .. }) {
+        let selected = app.delete_selection_count();
+        let label = if selected == 0 {
+            " DELETE MODE - pick combs with d ".to_string()
+        } else {
+            format!(" DELETE MODE - {} selected ", selected)
+        };
+        let right = Paragraph::new(Line::from(Span::styled(
+            label,
+            Style::default().fg(RED).add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Right)
+        .style(Style::default().bg(MANTLE));
+        frame.render_widget(right, area);
+    } else if matches!(app.mode, AppMode::MovingComb { .. }) {
         let right = Paragraph::new(Line::from(Span::styled(
             " MOVE MODE - refresh paused ",
             Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
@@ -164,6 +178,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let is_moving = matches!(app.mode, AppMode::MovingComb { .. });
+    let delete_mode_hive = app.delete_mode_hive_dir_name();
 
     let items: Vec<ListItem> = app
         .items
@@ -175,22 +190,43 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                 expanded,
                 comb_count,
             } => {
-                let arrow = if *expanded { "▾" } else { "▸" };
-                let count_str = if *comb_count > 0 {
-                    format!(" ({})", comb_count)
+                if app.deleting_hive_dir_names.contains(&info.dir_name) {
+                    const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                    let ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
+                    let frame_char = SPINNER[(ms / 80) as usize % SPINNER.len()];
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!(" {} ", frame_char), Style::default().fg(RED)),
+                        Span::styled(
+                            info.repo_name.clone(),
+                            Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" (deleting)".to_string(), Style::default().fg(SURFACE1)),
+                    ]))
                 } else {
-                    String::new()
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!(" {} ", arrow), Style::default().fg(PEACH)),
-                    Span::styled(
-                        info.repo_name.clone(),
-                        Style::default().fg(PEACH).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(count_str, Style::default().fg(OVERLAY0)),
-                ]))
+                    let arrow = if *expanded { "▾" } else { "▸" };
+                    let count_str = if *comb_count > 0 {
+                        format!(" ({})", comb_count)
+                    } else {
+                        String::new()
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!(" {} ", arrow), Style::default().fg(PEACH)),
+                        Span::styled(
+                            info.repo_name.clone(),
+                            Style::default().fg(PEACH).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(count_str, Style::default().fg(OVERLAY0)),
+                    ]))
+                }
             }
-            NavItem::Comb { comb, .. } => {
+            NavItem::Comb {
+                hive_dir_name,
+                comb,
+            } => {
                 if comb.cloning {
                     // In-progress comb: animated spinner + dim text
                     const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -205,6 +241,19 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                         Span::styled(comb.name.clone(), Style::default().fg(OVERLAY0)),
                         Span::styled(" (in progress)".to_string(), Style::default().fg(SURFACE1)),
                     ]))
+                } else if app.deleting_comb_ids.contains(&comb.id) {
+                    const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                    let ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
+                    let frame_char = SPINNER[(ms / 80) as usize % SPINNER.len()];
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("   {} ", frame_char), Style::default().fg(RED)),
+                        Span::styled(comb.name.clone(), Style::default().fg(RED)),
+                        Span::styled(" (deleting)".to_string(), Style::default().fg(SURFACE1)),
+                    ]))
                 } else if is_moving && i == app.selected {
                     // Comb being moved: mauve highlight with move indicator
                     ListItem::new(Line::from(vec![
@@ -213,6 +262,17 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                             comb.name.clone(),
                             Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
                         ),
+                        Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
+                    ]))
+                } else if delete_mode_hive == Some(hive_dir_name.as_str()) {
+                    let is_marked = app.is_marked_for_delete(&comb.id);
+                    let marker = if is_marked { "[x]" } else { "[ ]" };
+                    let marker_color = if is_marked { RED } else { OVERLAY0 };
+                    let name_color = if is_marked { TEXT } else { SUBTEXT0 };
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("   {} ", marker), Style::default().fg(marker_color)),
+                        Span::styled(comb.name.clone(), Style::default().fg(name_color)),
                         Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
                     ]))
                 } else {
@@ -407,6 +467,33 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(" cancel", Style::default().fg(OVERLAY0)),
             ]),
+            AppMode::DeleteCombSelection { .. } => Line::from(vec![
+                Span::styled(
+                    format!(" {} selected ", app.delete_selection_count()),
+                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " ↑↓/j/k",
+                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" navigate ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(" d", Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+                Span::styled(" mark ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " enter",
+                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" delete ", Style::default().fg(OVERLAY0)),
+                Span::styled("│", Style::default().fg(SURFACE1)),
+                Span::styled(
+                    " Esc",
+                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" cancel", Style::default().fg(OVERLAY0)),
+            ]),
             AppMode::MovingComb { .. } => Line::from(vec![
                 Span::styled(
                     " ↑↓",
@@ -488,6 +575,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     ),
                     Span::styled(" del ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(" D", Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+                    Span::styled(" multi-del ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
                     Span::styled(
                         " s",
                         Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
@@ -542,7 +632,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame) {
-    let area = overlay_rect(60, 24, frame.area());
+    let area = overlay_rect(60, 25, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -600,6 +690,10 @@ fn render_help(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("  d        ", key_style),
             Span::styled("Delete selected comb or hive", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  D        ", key_style),
+            Span::styled("Multi-delete mode for combs in a hive", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  </>/H/L  ", key_style),

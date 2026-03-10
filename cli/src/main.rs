@@ -21,7 +21,10 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::{App, AppMode, CloneResult, ConfirmAction, Focus, InputAction, RefreshResult};
+use app::{
+    App, AppMode, CloneResult, ConfirmAction, DeleteResult, DeleteTarget, Focus, InputAction,
+    RefreshResult,
+};
 use config::*;
 
 type Term = Terminal<CrosstermBackend<io::Stdout>>;
@@ -185,9 +188,10 @@ fn run_app(
 
         // --- Phase 2: Background checks ---
         check_pending_clone(app);
+        check_pending_delete(app);
 
-        // Spinner animation while clone is in progress
-        if app.pending_clone.is_some() {
+        // Spinner animation while background work is in progress
+        if app.pending_clone.is_some() || app.pending_delete.is_some() {
             dirty = true; // force redraws for spinner animation
         }
 
@@ -203,7 +207,7 @@ fn run_app(
         // Check for completed background refresh
         if let Some(slot) = app.pending_refresh.clone() {
             if let Ok(mut guard) = slot.try_lock() {
-                if !matches!(app.mode, AppMode::MovingComb { .. }) {
+                if !app.should_pause_refresh() {
                     if let Some(result) = guard.take() {
                         drop(guard);
                         app.pending_refresh = None;
@@ -216,10 +220,7 @@ fn run_app(
 
         // Launch async refresh every ~5 seconds (only if not already running)
         tick_count = tick_count.wrapping_add(1);
-        if tick_count % 312 == 0
-            && app.pending_refresh.is_none()
-            && !matches!(app.mode, AppMode::MovingComb { .. })
-        {
+        if tick_count % 312 == 0 && app.pending_refresh.is_none() && !app.should_pause_refresh() {
             let slot: Arc<Mutex<Option<RefreshResult>>> = Arc::new(Mutex::new(None));
             let slot_clone = Arc::clone(&slot);
             let beehive_dir = app.beehive_dir.clone();
@@ -402,8 +403,51 @@ fn check_pending_clone(app: &mut App) {
     }
 }
 
+fn check_pending_delete(app: &mut App) {
+    if let Some(ref slot) = app.pending_delete {
+        let mut guard = slot.lock().unwrap();
+        if let Some(result) = guard.take() {
+            drop(guard);
+            app.pending_delete = None;
+            app.activity = None;
+            app.deleting_comb_ids.clear();
+            app.deleting_hive_dir_names.clear();
+
+            let mut parts = Vec::new();
+            if result.deleted_comb_names.len() == 1 {
+                parts.push(format!("Deleted '{}'", result.deleted_comb_names[0]));
+            } else if !result.deleted_comb_names.is_empty() {
+                parts.push(format!("Deleted {} combs", result.deleted_comb_names.len()));
+            }
+            if result.deleted_hive_names.len() == 1 {
+                parts.push(format!("Deleted hive '{}'", result.deleted_hive_names[0]));
+            } else if !result.deleted_hive_names.is_empty() {
+                parts.push(format!("Deleted {} hives", result.deleted_hive_names.len()));
+            }
+
+            app.status_message = if result.errors.is_empty() {
+                Some(parts.join("; "))
+            } else if parts.is_empty() {
+                Some(format!("Delete failed: {}", result.errors.join("; ")))
+            } else {
+                Some(format!(
+                    "{}; {}",
+                    parts.join("; "),
+                    result.errors.join("; ")
+                ))
+            };
+            app.refresh();
+        }
+    }
+}
+
 fn is_focus_toggle(key: &crossterm::event::KeyEvent) -> bool {
     key.code == KeyCode::Char(' ') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn is_delete_mode_toggle(key: &crossterm::event::KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('D'))
+        || (key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::SHIFT))
 }
 
 fn handle_key(
@@ -445,6 +489,10 @@ fn handle_key(
             handle_comb_finder(app, key)?;
             return Ok(());
         }
+        AppMode::DeleteCombSelection { .. } => {
+            handle_delete_mode(app, key)?;
+            return Ok(());
+        }
         AppMode::MovingComb { .. } => {
             handle_moving_comb(app, key)?;
             return Ok(());
@@ -468,6 +516,10 @@ fn handle_key(
         Focus::Sidebar => match &app.mode {
             AppMode::Normal => {
                 app.status_message = None;
+                if is_delete_mode_toggle(&key) {
+                    app.start_delete_mode();
+                    return Ok(());
+                }
                 match key.code {
                     KeyCode::Char('q') => app.start_quit(),
                     KeyCode::Up | KeyCode::Char('k') => app.move_up(),
@@ -557,6 +609,7 @@ fn handle_key(
             | AppMode::Settings { .. }
             | AppMode::BranchPicker { .. }
             | AppMode::CombFinder { .. }
+            | AppMode::DeleteCombSelection { .. }
             | AppMode::MovingComb { .. } => {}
         },
     }
@@ -641,6 +694,41 @@ fn handle_comb_finder(
             {
                 filter.pop();
                 *selected = 0;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_delete_mode(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+            app.status_message = Some("Delete cancelled".to_string());
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.status_message = None;
+            app.move_delete_selection_up();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.status_message = None;
+            app.move_delete_selection_down();
+        }
+        KeyCode::Char('d') | KeyCode::Char('D') => {
+            app.status_message = None;
+            app.toggle_delete_selection();
+        }
+        KeyCode::Enter => {
+            let targets = app.selected_delete_targets();
+            if targets.is_empty() {
+                app.status_message = Some("No combs selected for delete".to_string());
+            } else {
+                app.mode = AppMode::Normal;
+                start_async_delete(app, targets)?;
             }
         }
         _ => {}
@@ -939,10 +1027,125 @@ fn start_async_copy(
     Ok(())
 }
 
+fn delete_activity(targets: &[DeleteTarget]) -> String {
+    if targets.len() == 1 {
+        match &targets[0] {
+            DeleteTarget::Comb { comb_name, .. } => format!("Deleting '{}'", comb_name),
+            DeleteTarget::Hive { repo_name, .. } => format!("Deleting hive '{}'", repo_name),
+        }
+    } else {
+        format!("Deleting {} combs", targets.len())
+    }
+}
+
+fn delete_targets_sync(beehive_dir: &str, targets: Vec<DeleteTarget>) -> DeleteResult {
+    let mut deleted_comb_names = Vec::new();
+    let mut deleted_hive_names = Vec::new();
+    let mut errors = Vec::new();
+
+    for target in targets {
+        match target {
+            DeleteTarget::Comb {
+                hive_dir_name,
+                comb_id,
+                comb_name,
+            } => {
+                let mut state = match load_hive_state(beehive_dir, &hive_dir_name) {
+                    Ok(state) => state,
+                    Err(e) => {
+                        errors.push(format!("Failed to load '{}': {}", comb_name, e));
+                        continue;
+                    }
+                };
+
+                let Some(pos) = state.combs.iter().position(|comb| comb.id == comb_id) else {
+                    errors.push(format!("Comb '{}' no longer exists", comb_name));
+                    continue;
+                };
+
+                let comb = state.combs.remove(pos);
+                if Path::new(&comb.path).exists() {
+                    if let Err(e) = std::fs::remove_dir_all(&comb.path) {
+                        errors.push(format!("Failed to delete '{}': {}", comb_name, e));
+                        continue;
+                    }
+                }
+
+                if let Err(e) = save_hive_state(beehive_dir, &hive_dir_name, &state) {
+                    errors.push(format!("Failed to update '{}': {}", comb_name, e));
+                    continue;
+                }
+
+                deleted_comb_names.push(comb_name);
+            }
+            DeleteTarget::Hive {
+                dir_name,
+                repo_name,
+            } => {
+                let hive_dir = Path::new(beehive_dir).join(&dir_name);
+                if hive_dir.exists() {
+                    if let Err(e) = std::fs::remove_dir_all(&hive_dir) {
+                        errors.push(format!("Failed to delete hive '{}': {}", repo_name, e));
+                        continue;
+                    }
+                }
+
+                deleted_hive_names.push(repo_name);
+            }
+        }
+    }
+
+    DeleteResult {
+        deleted_comb_names,
+        deleted_hive_names,
+        errors,
+    }
+}
+
+fn start_async_delete(
+    app: &mut App,
+    targets: Vec<DeleteTarget>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if targets.is_empty() {
+        app.status_message = Some("Nothing selected for delete".to_string());
+        return Ok(());
+    }
+
+    for target in &targets {
+        match target {
+            DeleteTarget::Comb { comb_id, .. } => {
+                app.deleting_comb_ids.insert(comb_id.clone());
+                app.remove_terminal(comb_id);
+            }
+            DeleteTarget::Hive { dir_name, .. } => {
+                app.deleting_hive_dir_names.insert(dir_name.clone());
+                app.remove_hive_terminals(dir_name);
+            }
+        }
+    }
+
+    let slot: Arc<Mutex<Option<DeleteResult>>> = Arc::new(Mutex::new(None));
+    let slot_clone = Arc::clone(&slot);
+    let beehive_dir = app.beehive_dir.clone();
+    let activity = delete_activity(&targets);
+
+    std::thread::spawn(move || {
+        let result = delete_targets_sync(&beehive_dir, targets);
+        let mut guard = slot_clone.lock().unwrap();
+        *guard = Some(result);
+    });
+
+    app.pending_refresh = None;
+    app.pending_delete = Some(slot);
+    app.activity = Some(activity);
+    app.status_message = None;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     fn hive(dir_name: &str, repo_name: &str) -> HiveInfo {
         HiveInfo {
@@ -981,10 +1184,13 @@ mod tests {
             terminals: HashMap::new(),
             last_term_size: (0, 0),
             pending_clone: None,
+            pending_delete: None,
             pending_refresh: None,
             activity: None,
             update_available: None,
             sidebar_width: 28,
+            deleting_comb_ids: HashSet::new(),
+            deleting_hive_dir_names: HashSet::new(),
             keyboard_enhanced: false,
         }
     }
@@ -1025,6 +1231,76 @@ mod tests {
             app::NavItem::Comb { comb, .. } => assert_eq!(comb.id, "b"),
             _ => panic!("expected selected comb"),
         }
+    }
+
+    #[test]
+    fn delete_mode_enter_requires_a_selection() {
+        let mut app = make_app(
+            vec![
+                app::NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 2,
+                },
+                app::NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("a", "alpha", "main"),
+                },
+                app::NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("b", "beta", "main"),
+                },
+            ],
+            1,
+        );
+        app.mode = AppMode::DeleteCombSelection {
+            hive_dir_name: "repo_api".to_string(),
+            selected_comb_ids: HashSet::new(),
+        };
+
+        handle_delete_mode(&mut app, crossterm::event::KeyEvent::from(KeyCode::Enter)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::DeleteCombSelection { .. }));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("No combs selected for delete")
+        );
+    }
+
+    #[test]
+    fn delete_mode_d_toggles_current_comb() {
+        let mut app = make_app(
+            vec![
+                app::NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 1,
+                },
+                app::NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("a", "alpha", "main"),
+                },
+            ],
+            1,
+        );
+        app.mode = AppMode::DeleteCombSelection {
+            hive_dir_name: "repo_api".to_string(),
+            selected_comb_ids: HashSet::new(),
+        };
+
+        handle_delete_mode(
+            &mut app,
+            crossterm::event::KeyEvent::from(KeyCode::Char('d')),
+        )
+        .unwrap();
+        assert!(app.is_marked_for_delete("a"));
+
+        handle_delete_mode(
+            &mut app,
+            crossterm::event::KeyEvent::from(KeyCode::Char('d')),
+        )
+        .unwrap();
+        assert!(!app.is_marked_for_delete("a"));
     }
 
     #[test]
@@ -1159,31 +1435,26 @@ fn handle_confirm(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 comb_id,
                 comb_name,
             } => {
-                let mut state = load_hive_state(&app.beehive_dir, &hive_dir_name)
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-                if let Some(pos) = state.combs.iter().position(|c| c.id == comb_id) {
-                    let comb = state.combs.remove(pos);
-                    if Path::new(&comb.path).exists() {
-                        std::fs::remove_dir_all(&comb.path)?;
-                    }
-                    save_hive_state(&app.beehive_dir, &hive_dir_name, &state)
-                        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-                    app.status_message = Some(format!("Deleted '{}'", comb_name));
-                    app.remove_terminal(&comb_id);
-                }
-                app.refresh();
+                start_async_delete(
+                    app,
+                    vec![DeleteTarget::Comb {
+                        hive_dir_name,
+                        comb_id,
+                        comb_name,
+                    }],
+                )?;
             }
             ConfirmAction::DeleteHive {
                 dir_name,
                 repo_name,
             } => {
-                let hive_dir = Path::new(&app.beehive_dir).join(&dir_name);
-                if hive_dir.exists() {
-                    std::fs::remove_dir_all(&hive_dir)?;
-                }
-                app.status_message = Some(format!("Deleted '{}'", repo_name));
-                app.remove_hive_terminals(&dir_name);
-                app.refresh();
+                start_async_delete(
+                    app,
+                    vec![DeleteTarget::Hive {
+                        dir_name,
+                        repo_name,
+                    }],
+                )?;
             }
             ConfirmAction::ResetConfig => match reset_config() {
                 Ok(()) => {

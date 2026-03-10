@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::config::*;
@@ -10,6 +10,25 @@ pub struct CloneResult {
     pub comb_name: String,
     #[allow(dead_code)]
     pub hive_dir_name: String,
+}
+
+pub struct DeleteResult {
+    pub deleted_comb_names: Vec<String>,
+    pub deleted_hive_names: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone)]
+pub enum DeleteTarget {
+    Comb {
+        hive_dir_name: String,
+        comb_id: String,
+        comb_name: String,
+    },
+    Hive {
+        dir_name: String,
+        repo_name: String,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -94,6 +113,10 @@ pub enum AppMode {
         filter: String,
         selected: usize,
     },
+    DeleteCombSelection {
+        hive_dir_name: String,
+        selected_comb_ids: HashSet<String>,
+    },
     Help,
     Settings {
         preflight: PreflightResult,
@@ -144,11 +167,14 @@ pub struct App {
     pub terminals: HashMap<String, EmbeddedTerminal>,
     pub last_term_size: (u16, u16),
     pub pending_clone: Option<Arc<Mutex<Option<CloneResult>>>>,
+    pub pending_delete: Option<Arc<Mutex<Option<DeleteResult>>>>,
     pub pending_refresh: Option<Arc<Mutex<Option<RefreshResult>>>>,
     /// Persistent activity message shown in header (e.g. "Cloning 'foo'...")
     pub activity: Option<String>,
     pub update_available: Option<String>,
     pub sidebar_width: u16,
+    pub deleting_comb_ids: HashSet<String>,
+    pub deleting_hive_dir_names: HashSet<String>,
     /// Whether the outer terminal supports the kitty keyboard enhancement protocol.
     /// When true, crossterm reports SUPER/META modifiers and key event kinds (press/repeat/release).
     pub keyboard_enhanced: bool,
@@ -199,6 +225,43 @@ impl App {
             NavItem::Comb { comb, .. } => comb.cloning,
             _ => false,
         })
+    }
+
+    pub fn has_pending_work(&self) -> bool {
+        self.pending_clone.is_some() || self.pending_delete.is_some()
+    }
+
+    pub fn should_pause_refresh(&self) -> bool {
+        self.pending_delete.is_some()
+            || matches!(
+                self.mode,
+                AppMode::MovingComb { .. } | AppMode::DeleteCombSelection { .. }
+            )
+    }
+
+    pub fn delete_mode_hive_dir_name(&self) -> Option<&str> {
+        match &self.mode {
+            AppMode::DeleteCombSelection { hive_dir_name, .. } => Some(hive_dir_name.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn delete_selection_count(&self) -> usize {
+        match &self.mode {
+            AppMode::DeleteCombSelection {
+                selected_comb_ids, ..
+            } => selected_comb_ids.len(),
+            _ => 0,
+        }
+    }
+
+    pub fn is_marked_for_delete(&self, comb_id: &str) -> bool {
+        match &self.mode {
+            AppMode::DeleteCombSelection {
+                selected_comb_ids, ..
+            } => selected_comb_ids.contains(comb_id),
+            _ => false,
+        }
     }
 
     fn find_hive_index(&self, hive_dir_name: &str) -> Option<usize> {
@@ -255,6 +318,58 @@ impl App {
         Ok(self.select_comb_by_id(comb_id))
     }
 
+    fn first_deletable_comb_index_in_hive(&self, hive_dir_name: &str) -> Option<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| match item {
+                NavItem::Comb {
+                    hive_dir_name: h,
+                    comb,
+                } if h == hive_dir_name
+                    && !comb.cloning
+                    && !self.deleting_comb_ids.contains(&comb.id) =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+    }
+
+    fn adjacent_deletable_comb_index_in_hive(
+        &self,
+        hive_dir_name: &str,
+        from: usize,
+        forward: bool,
+    ) -> Option<usize> {
+        let len = self.items.len();
+        if len == 0 {
+            return None;
+        }
+
+        for step in 1..=len {
+            let index = if forward {
+                (from + step) % len
+            } else {
+                (from + len - (step % len)) % len
+            };
+
+            if matches!(
+                self.items.get(index),
+                Some(NavItem::Comb {
+                    hive_dir_name: h,
+                    comb,
+                }) if h == hive_dir_name
+                    && !comb.cloning
+                    && !self.deleting_comb_ids.contains(&comb.id)
+            ) {
+                return Some(index);
+            }
+        }
+
+        None
+    }
+
     pub fn start_comb_finder(&mut self) {
         let mut targets = Vec::new();
         let hives = match list_hives(&self.beehive_dir) {
@@ -300,6 +415,154 @@ impl App {
         };
     }
 
+    pub fn start_delete_mode(&mut self) {
+        if self.has_pending_work() || self.has_cloning_comb() {
+            self.status_message = Some("Wait for the current operation to finish".to_string());
+            return;
+        }
+        if self.items.is_empty() {
+            return;
+        }
+
+        let (hive_dir_name, selected_comb_id) = match &self.items[self.selected] {
+            NavItem::Hive { info, .. } => (info.dir_name.clone(), None),
+            NavItem::Comb {
+                hive_dir_name,
+                comb,
+            } => {
+                if comb.cloning {
+                    self.status_message =
+                        Some("Cannot delete a comb that is still in progress".to_string());
+                    return;
+                }
+                if self.deleting_comb_ids.contains(&comb.id) {
+                    self.status_message = Some("That comb is already being deleted".to_string());
+                    return;
+                }
+                (hive_dir_name.clone(), Some(comb.id.clone()))
+            }
+        };
+
+        let Some(hive_index) = self.find_hive_index(&hive_dir_name) else {
+            self.status_message = Some("Hive not found".to_string());
+            return;
+        };
+
+        if let Err(e) = self.expand_hive_at(hive_index) {
+            self.status_message = Some(format!("Failed to open hive: {}", e));
+            return;
+        }
+
+        let initial_index = selected_comb_id
+            .as_ref()
+            .and_then(|comb_id| {
+                self.items.iter().position(|item| {
+                    matches!(
+                        item,
+                        NavItem::Comb {
+                            hive_dir_name: h,
+                            comb,
+                        } if h == &hive_dir_name && comb.id == *comb_id && !comb.cloning
+                    )
+                })
+            })
+            .or_else(|| self.first_deletable_comb_index_in_hive(&hive_dir_name));
+
+        let Some(initial_index) = initial_index else {
+            self.status_message = Some("No combs available to delete in this hive".to_string());
+            return;
+        };
+
+        self.selected = initial_index;
+        self.mode = AppMode::DeleteCombSelection {
+            hive_dir_name,
+            selected_comb_ids: HashSet::new(),
+        };
+    }
+
+    pub fn move_delete_selection_up(&mut self) {
+        if let Some(hive_dir_name) = self.delete_mode_hive_dir_name().map(str::to_string) {
+            if let Some(index) =
+                self.adjacent_deletable_comb_index_in_hive(&hive_dir_name, self.selected, false)
+            {
+                self.selected = index;
+            }
+        }
+    }
+
+    pub fn move_delete_selection_down(&mut self) {
+        if let Some(hive_dir_name) = self.delete_mode_hive_dir_name().map(str::to_string) {
+            if let Some(index) =
+                self.adjacent_deletable_comb_index_in_hive(&hive_dir_name, self.selected, true)
+            {
+                self.selected = index;
+            }
+        }
+    }
+
+    pub fn toggle_delete_selection(&mut self) {
+        let Some(hive_dir_name) = self.delete_mode_hive_dir_name().map(str::to_string) else {
+            return;
+        };
+
+        let selected_item = self.items.get(self.selected).cloned();
+        let Some(NavItem::Comb {
+            hive_dir_name: item_hive,
+            comb,
+        }) = selected_item
+        else {
+            self.status_message = Some("Select a comb to mark it for delete".to_string());
+            return;
+        };
+
+        if item_hive != hive_dir_name {
+            self.status_message =
+                Some("Delete mode only works within one hive at a time".to_string());
+            return;
+        }
+        if comb.cloning {
+            self.status_message =
+                Some("Cannot delete a comb that is still in progress".to_string());
+            return;
+        }
+
+        if let AppMode::DeleteCombSelection {
+            selected_comb_ids, ..
+        } = &mut self.mode
+        {
+            if !selected_comb_ids.remove(&comb.id) {
+                selected_comb_ids.insert(comb.id);
+            }
+        }
+    }
+
+    pub fn selected_delete_targets(&self) -> Vec<DeleteTarget> {
+        let AppMode::DeleteCombSelection {
+            hive_dir_name,
+            selected_comb_ids,
+        } = &self.mode
+        else {
+            return vec![];
+        };
+
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                NavItem::Comb {
+                    hive_dir_name: h,
+                    comb,
+                } if h == hive_dir_name && selected_comb_ids.contains(&comb.id) => {
+                    Some(DeleteTarget::Comb {
+                        hive_dir_name: h.clone(),
+                        comb_id: comb.id.clone(),
+                        comb_name: comb.name.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn new(beehive_dir: String, keyboard_enhanced: bool) -> Result<Self, String> {
         let config = load_app_config()?;
         let mut app = App {
@@ -314,10 +577,13 @@ impl App {
             terminals: HashMap::new(),
             last_term_size: (0, 0),
             pending_clone: None,
+            pending_delete: None,
             pending_refresh: None,
             activity: None,
             update_available: None,
             sidebar_width: config.sidebar_width,
+            deleting_comb_ids: HashSet::new(),
+            deleting_hive_dir_names: HashSet::new(),
             keyboard_enhanced,
         };
         app.load_all(true)?;
@@ -559,7 +825,7 @@ impl App {
     }
 
     pub fn start_new_comb(&mut self) {
-        if self.pending_clone.is_some() {
+        if self.has_pending_work() {
             self.status_message = Some("Wait for current operation to finish".to_string());
             return;
         }
@@ -577,7 +843,7 @@ impl App {
     }
 
     pub fn start_copy_comb(&mut self) {
-        if self.pending_clone.is_some() {
+        if self.has_pending_work() {
             self.status_message = Some("Wait for current operation to finish".to_string());
             return;
         }
@@ -609,8 +875,8 @@ impl App {
     }
 
     pub fn start_move_comb(&mut self) {
-        if self.pending_clone.is_some() || self.has_cloning_comb() {
-            self.status_message = Some("Wait for the current comb add to finish".to_string());
+        if self.has_pending_work() || self.has_cloning_comb() {
+            self.status_message = Some("Wait for current operation to finish".to_string());
             return;
         }
         if self.items.is_empty() {
@@ -724,6 +990,10 @@ impl App {
     }
 
     pub fn start_delete(&mut self) {
+        if self.has_pending_work() {
+            self.status_message = Some("Wait for current operation to finish".to_string());
+            return;
+        }
         if self.items.is_empty() {
             return;
         }
@@ -825,10 +1095,13 @@ mod tests {
             terminals: HashMap::new(),
             last_term_size: (0, 0),
             pending_clone: None,
+            pending_delete: None,
             pending_refresh: None,
             activity: None,
             update_available: None,
             sidebar_width: 28,
+            deleting_comb_ids: HashSet::new(),
+            deleting_hive_dir_names: HashSet::new(),
             keyboard_enhanced: false,
         }
     }
@@ -896,5 +1169,68 @@ mod tests {
             NavItem::Comb { comb, .. } => assert_eq!(comb.id, "b"),
             _ => panic!("expected selected comb"),
         }
+    }
+
+    #[test]
+    fn start_delete_mode_from_hive_selects_first_comb_in_that_hive() {
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 2,
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("a", "alpha", "main"),
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("b", "beta", "main"),
+                },
+            ],
+            0,
+        );
+
+        app.start_delete_mode();
+
+        assert!(matches!(app.mode, AppMode::DeleteCombSelection { .. }));
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn selected_delete_targets_follow_marked_comb_ids() {
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 3,
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("a", "alpha", "main"),
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("b", "beta", "main"),
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("c", "gamma", "main"),
+                },
+            ],
+            1,
+        );
+        app.mode = AppMode::DeleteCombSelection {
+            hive_dir_name: "repo_api".to_string(),
+            selected_comb_ids: HashSet::from(["a".to_string(), "c".to_string()]),
+        };
+
+        let targets = app.selected_delete_targets();
+
+        assert_eq!(targets.len(), 2);
+        assert!(matches!(&targets[0], DeleteTarget::Comb { comb_id, .. } if comb_id == "a"));
+        assert!(matches!(&targets[1], DeleteTarget::Comb { comb_id, .. } if comb_id == "c"));
     }
 }
