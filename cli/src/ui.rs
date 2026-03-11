@@ -7,7 +7,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{filter_comb_finder_targets, App, AppMode, Focus, NavItem};
+use crate::{
+    app::{filter_comb_finder_targets, App, AppMode, Focus, NavItem},
+    fuzzy::fuzzy_filter_strings,
+};
 
 // Catppuccin Mocha
 const BASE: Color = Color::Rgb(30, 30, 46);
@@ -769,10 +772,7 @@ fn render_branch_picker(
     // Branch list
     let list_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
 
-    let filtered: Vec<&String> = branches
-        .iter()
-        .filter(|b| filter.is_empty() || b.contains(filter))
-        .collect();
+    let filtered = fuzzy_filter_strings(branches, filter);
 
     let count_line = Line::from(Span::styled(
         format!(" {} of {} branches", filtered.len(), branches.len()),

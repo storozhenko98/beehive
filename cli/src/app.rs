@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::config::*;
+use crate::fuzzy::fuzzy_match_score;
 use crate::terminal::EmbeddedTerminal;
 
 /// Background clone result.
@@ -70,15 +71,45 @@ pub fn filter_comb_finder_targets<'a>(
     filter: &str,
 ) -> Vec<&'a CombFinderTarget> {
     let filter = filter.trim().to_lowercase();
-    targets
+    if filter.is_empty() {
+        return targets.iter().collect();
+    }
+
+    let mut scored: Vec<(i64, &CombFinderTarget)> = targets
         .iter()
-        .filter(|target| {
-            filter.is_empty()
-                || target.comb_name.to_lowercase().contains(&filter)
-                || target.branch.to_lowercase().contains(&filter)
-                || target.hive_repo_name.to_lowercase().contains(&filter)
+        .filter_map(|target| {
+            let best_score = [
+                fuzzy_match_score(&filter, &target.comb_name).map(|score| score + 300),
+                fuzzy_match_score(&filter, &target.branch).map(|score| score + 200),
+                fuzzy_match_score(&filter, &target.hive_repo_name).map(|score| score + 100),
+            ]
+            .into_iter()
+            .flatten()
+            .max();
+
+            best_score.map(|score| (score, target))
         })
-        .collect()
+        .collect();
+
+    scored.sort_by(|(score_a, target_a), (score_b, target_b)| {
+        score_b
+            .cmp(score_a)
+            .then_with(|| target_a.comb_name.len().cmp(&target_b.comb_name.len()))
+            .then_with(|| {
+                target_a
+                    .comb_name
+                    .to_lowercase()
+                    .cmp(&target_b.comb_name.to_lowercase())
+            })
+            .then_with(|| {
+                target_a
+                    .branch
+                    .to_lowercase()
+                    .cmp(&target_b.branch.to_lowercase())
+            })
+    });
+
+    scored.into_iter().map(|(_, target)| target).collect()
 }
 
 pub enum AppMode {
@@ -181,6 +212,11 @@ pub struct App {
 }
 
 impl App {
+    pub fn enter_sidebar_mode(&mut self, mode: AppMode) {
+        self.focus = Focus::Sidebar;
+        self.mode = mode;
+    }
+
     fn selected_item_key(&self) -> Option<NavItemKey> {
         self.items.get(self.selected).map(|item| match item {
             NavItem::Hive { info, .. } => NavItemKey::Hive {
@@ -408,11 +444,11 @@ impl App {
             return;
         }
 
-        self.mode = AppMode::CombFinder {
+        self.enter_sidebar_mode(AppMode::CombFinder {
             targets,
             filter: String::new(),
             selected: 0,
-        };
+        });
     }
 
     pub fn start_delete_mode(&mut self) {
@@ -474,10 +510,10 @@ impl App {
         };
 
         self.selected = initial_index;
-        self.mode = AppMode::DeleteCombSelection {
+        self.enter_sidebar_mode(AppMode::DeleteCombSelection {
             hive_dir_name,
             selected_comb_ids: HashSet::new(),
-        };
+        });
     }
 
     pub fn move_delete_selection_up(&mut self) {
@@ -830,13 +866,13 @@ impl App {
             return;
         }
         if let Some(dir_name) = self.selected_hive_dir() {
-            self.mode = AppMode::Input {
+            self.enter_sidebar_mode(AppMode::Input {
                 prompt: "Comb name".to_string(),
                 value: String::new(),
                 action: InputAction::NewCombName {
                     hive_dir_name: dir_name,
                 },
-            };
+            });
         } else {
             self.status_message = Some("Add a hive first with 'a'".to_string());
         }
@@ -860,7 +896,7 @@ impl App {
                     Some("Cannot copy a comb that is still in progress".to_string());
                 return;
             }
-            self.mode = AppMode::Input {
+            self.enter_sidebar_mode(AppMode::Input {
                 prompt: format!("Copy '{}' as", comb.name),
                 value: String::new(),
                 action: InputAction::CopyCombName {
@@ -868,7 +904,7 @@ impl App {
                     source_comb_name: comb.name.clone(),
                     source_comb_path: comb.path.clone(),
                 },
-            };
+            });
         } else {
             self.status_message = Some("Select a comb to copy".to_string());
         }
@@ -894,12 +930,12 @@ impl App {
             let hive_dir_name = hive_dir_name.clone();
             let moving_comb_id = comb.id.clone();
             let original_items = self.items.clone();
-            self.mode = AppMode::MovingComb {
+            self.enter_sidebar_mode(AppMode::MovingComb {
                 hive_dir_name,
                 moving_comb_id,
                 original_items,
                 original_selected: self.selected,
-            };
+            });
         } else {
             self.status_message = Some("Select a comb to move".to_string());
         }
@@ -982,11 +1018,11 @@ impl App {
     }
 
     pub fn start_add_hive(&mut self) {
-        self.mode = AppMode::Input {
+        self.enter_sidebar_mode(AppMode::Input {
             prompt: "Repository (owner/repo or URL)".to_string(),
             value: String::new(),
             action: InputAction::AddHiveUrl,
-        };
+        });
     }
 
     pub fn start_delete(&mut self) {
@@ -1006,41 +1042,41 @@ impl App {
                     self.status_message = Some("Cannot delete while in progress".to_string());
                     return;
                 }
-                self.mode = AppMode::Confirm {
+                self.enter_sidebar_mode(AppMode::Confirm {
                     message: format!("Delete comb '{}'?", comb.name),
                     action: ConfirmAction::DeleteComb {
                         hive_dir_name: hive_dir_name.clone(),
                         comb_id: comb.id.clone(),
                         comb_name: comb.name.clone(),
                     },
-                };
+                });
             }
             NavItem::Hive { info, .. } => {
-                self.mode = AppMode::Confirm {
+                self.enter_sidebar_mode(AppMode::Confirm {
                     message: format!("Delete hive '{}'?", info.repo_name),
                     action: ConfirmAction::DeleteHive {
                         dir_name: info.dir_name.clone(),
                         repo_name: info.repo_name.clone(),
                     },
-                };
+                });
             }
         }
     }
 
     pub fn start_quit(&mut self) {
-        self.mode = AppMode::Confirm {
+        self.enter_sidebar_mode(AppMode::Confirm {
             message: "Quit Beehive?".to_string(),
             action: ConfirmAction::Quit,
-        };
+        });
     }
 
     pub fn open_settings(&mut self) {
         let pf = preflight();
-        self.mode = AppMode::Settings { preflight: pf };
+        self.enter_sidebar_mode(AppMode::Settings { preflight: pf });
     }
 
     pub fn open_help(&mut self) {
-        self.mode = AppMode::Help;
+        self.enter_sidebar_mode(AppMode::Help);
     }
 
     pub fn selected_hive_dir(&self) -> Option<String> {
@@ -1129,6 +1165,32 @@ mod tests {
         assert_eq!(filter_comb_finder_targets(&targets, "auth").len(), 1);
         assert_eq!(filter_comb_finder_targets(&targets, "front").len(), 1);
         assert_eq!(filter_comb_finder_targets(&targets, "").len(), 2);
+    }
+
+    #[test]
+    fn filter_comb_finder_targets_ranks_name_matches_above_branch_matches() {
+        let targets = vec![
+            CombFinderTarget {
+                hive_dir_name: "repo_api".to_string(),
+                hive_repo_name: "ApiServer".to_string(),
+                comb_id: "1".to_string(),
+                comb_name: "feature-branch".to_string(),
+                branch: "main".to_string(),
+            },
+            CombFinderTarget {
+                hive_dir_name: "repo_web".to_string(),
+                hive_repo_name: "Frontend".to_string(),
+                comb_id: "2".to_string(),
+                comb_name: "alpha".to_string(),
+                branch: "foo/bar".to_string(),
+            },
+        ];
+
+        let filtered = filter_comb_finder_targets(&targets, "fb");
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].comb_id, "1");
+        assert_eq!(filtered[1].comb_id, "2");
     }
 
     #[test]
@@ -1232,5 +1294,40 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert!(matches!(&targets[0], DeleteTarget::Comb { comb_id, .. } if comb_id == "a"));
         assert!(matches!(&targets[1], DeleteTarget::Comb { comb_id, .. } if comb_id == "c"));
+    }
+
+    #[test]
+    fn start_add_hive_forces_sidebar_focus() {
+        let mut app = make_app(vec![], 0);
+        app.focus = Focus::Terminal;
+
+        app.start_add_hive();
+
+        assert!(matches!(app.mode, AppMode::Input { .. }));
+        assert!(matches!(app.focus, Focus::Sidebar));
+    }
+
+    #[test]
+    fn start_delete_mode_forces_sidebar_focus() {
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 1,
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("a", "alpha", "main"),
+                },
+            ],
+            1,
+        );
+        app.focus = Focus::Terminal;
+
+        app.start_delete_mode();
+
+        assert!(matches!(app.mode, AppMode::DeleteCombSelection { .. }));
+        assert!(matches!(app.focus, Focus::Sidebar));
     }
 }

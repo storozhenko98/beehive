@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod fuzzy;
 mod keyboard;
 mod terminal;
 mod ui;
@@ -455,6 +456,11 @@ fn handle_key(
     key: crossterm::event::KeyEvent,
     terminal: &mut Term,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if !matches!(app.mode, AppMode::Normal) && is_focus_toggle(&key) {
+        app.focus = Focus::Sidebar;
+        return Ok(());
+    }
+
     // Help and Settings: Esc or q to close
     match &app.mode {
         AppMode::Help => {
@@ -472,10 +478,10 @@ fn handle_key(
                     app.mode = AppMode::Normal;
                 }
                 KeyCode::Char('R') => {
-                    app.mode = AppMode::Confirm {
+                    app.enter_sidebar_mode(AppMode::Confirm {
                         message: "Reset config? (repos stay on disk)".to_string(),
                         action: ConfirmAction::ResetConfig,
-                    };
+                    });
                 }
                 _ => {}
             }
@@ -497,7 +503,15 @@ fn handle_key(
             handle_moving_comb(app, key)?;
             return Ok(());
         }
-        _ => {}
+        AppMode::Input { .. } => {
+            handle_input_key(app, key, terminal)?;
+            return Ok(());
+        }
+        AppMode::Confirm { .. } => {
+            handle_confirm_key(app, key)?;
+            return Ok(());
+        }
+        AppMode::Normal => {}
     }
 
     // Focus toggle: Ctrl+Space to switch to terminal (sidebar → terminal)
@@ -513,105 +527,112 @@ fn handle_key(
             // Terminal focus with non-Normal mode (overlay showing) — ignore keys
             // (the overlay-specific handlers above already returned for Help/Settings/BranchPicker)
         }
-        Focus::Sidebar => match &app.mode {
-            AppMode::Normal => {
-                app.status_message = None;
-                if is_delete_mode_toggle(&key) {
-                    app.start_delete_mode();
-                    return Ok(());
+        Focus::Sidebar => {
+            app.status_message = None;
+            if is_delete_mode_toggle(&key) {
+                app.start_delete_mode();
+                return Ok(());
+            }
+            match key.code {
+                KeyCode::Char('q') => app.start_quit(),
+                KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                KeyCode::Enter | KeyCode::Char('l') => {
+                    if let Some((id, path)) = app.enter_selected() {
+                        if Path::new(&path).exists() {
+                            app.open_terminal(&id, &path);
+                        } else {
+                            app.status_message = Some("Dir not found".to_string());
+                        }
+                    }
                 }
-                match key.code {
-                    KeyCode::Char('q') => app.start_quit(),
-                    KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                    KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                    KeyCode::Enter | KeyCode::Char('l') => {
-                        if let Some((id, path)) = app.enter_selected() {
-                            if Path::new(&path).exists() {
-                                app.open_terminal(&id, &path);
-                            } else {
-                                app.status_message = Some("Dir not found".to_string());
-                            }
-                        }
-                    }
-                    KeyCode::Char('n') => app.start_new_comb(),
-                    KeyCode::Char('f') => app.start_comb_finder(),
-                    KeyCode::Char('m') => app.start_move_comb(),
-                    KeyCode::Char('c') => app.start_copy_comb(),
-                    KeyCode::Char('a') => app.start_add_hive(),
-                    KeyCode::Char('d') => app.start_delete(),
-                    KeyCode::Char('r') => {
-                        app.refresh();
-                        app.status_message = Some("Refreshed".to_string());
-                    }
-                    KeyCode::Char('s') => app.open_settings(),
-                    KeyCode::Char('?') => app.open_help(),
-                    KeyCode::Char('<') | KeyCode::Char('H') => {
-                        if app.sidebar_width > 20 {
-                            app.sidebar_width -= 2;
-                            app.save_sidebar_width();
-                        }
-                    }
-                    KeyCode::Char('>') | KeyCode::Char('L') => {
-                        app.sidebar_width += 2;
+                KeyCode::Char('n') => app.start_new_comb(),
+                KeyCode::Char('f') => app.start_comb_finder(),
+                KeyCode::Char('m') => app.start_move_comb(),
+                KeyCode::Char('c') => app.start_copy_comb(),
+                KeyCode::Char('a') => app.start_add_hive(),
+                KeyCode::Char('d') => app.start_delete(),
+                KeyCode::Char('r') => {
+                    app.refresh();
+                    app.status_message = Some("Refreshed".to_string());
+                }
+                KeyCode::Char('s') => app.open_settings(),
+                KeyCode::Char('?') => app.open_help(),
+                KeyCode::Char('<') | KeyCode::Char('H') => {
+                    if app.sidebar_width > 20 {
+                        app.sidebar_width -= 2;
                         app.save_sidebar_width();
                     }
-                    KeyCode::Char('u') => {
-                        if let Some(ver) = app.update_available.clone() {
-                            app.status_message = Some(format!("Updating to v{}...", ver));
-                            terminal.draw(|frame| {
-                                ui::render(frame, app);
-                            })?;
-                            match update::self_update(&ver) {
-                                Ok(()) => {
-                                    app.status_message = Some(format!(
-                                        "Updated to v{}! Restart to use new version.",
-                                        ver
-                                    ));
-                                    app.update_available = None;
-                                }
-                                Err(e) => {
-                                    app.status_message = Some(e);
-                                }
+                }
+                KeyCode::Char('>') | KeyCode::Char('L') => {
+                    app.sidebar_width += 2;
+                    app.save_sidebar_width();
+                }
+                KeyCode::Char('u') => {
+                    if let Some(ver) = app.update_available.clone() {
+                        app.status_message = Some(format!("Updating to v{}...", ver));
+                        terminal.draw(|frame| {
+                            ui::render(frame, app);
+                        })?;
+                        match update::self_update(&ver) {
+                            Ok(()) => {
+                                app.status_message = Some(format!(
+                                    "Updated to v{}! Restart to use new version.",
+                                    ver
+                                ));
+                                app.update_available = None;
+                            }
+                            Err(e) => {
+                                app.status_message = Some(e);
                             }
                         }
-                    }
-                    _ => {}
-                }
-            }
-            AppMode::Input { .. } => match key.code {
-                KeyCode::Esc => {
-                    app.mode = AppMode::Normal;
-                }
-                KeyCode::Enter => {
-                    handle_input_submit(app, terminal)?;
-                }
-                KeyCode::Char(c) => {
-                    if let AppMode::Input { value, .. } = &mut app.mode {
-                        value.push(c);
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let AppMode::Input { value, .. } = &mut app.mode {
-                        value.pop();
                     }
                 }
                 _ => {}
-            },
-            AppMode::Confirm { .. } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    handle_confirm(app)?;
-                }
-                _ => {
-                    app.mode = AppMode::Normal;
-                }
-            },
-            AppMode::Help
-            | AppMode::Settings { .. }
-            | AppMode::BranchPicker { .. }
-            | AppMode::CombFinder { .. }
-            | AppMode::DeleteCombSelection { .. }
-            | AppMode::MovingComb { .. } => {}
-        },
+            }
+        }
+    }
+    Ok(())
+}
+
+fn handle_input_key(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    terminal: &mut Term,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Enter => {
+            handle_input_submit(app, terminal)?;
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::Input { value, .. } = &mut app.mode {
+                value.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let AppMode::Input { value, .. } = &mut app.mode {
+                value.pop();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_confirm_key(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            handle_confirm(app)?;
+        }
+        _ => {
+            app.mode = AppMode::Normal;
+        }
     }
     Ok(())
 }
@@ -753,10 +774,7 @@ fn handle_branch_picker(
                 ..
             } = &mut app.mode
             {
-                let filtered_count = branches
-                    .iter()
-                    .filter(|b| b.contains(filter.as_str()))
-                    .count();
+                let filtered_count = fuzzy::fuzzy_filter_strings(branches, filter).len();
                 if *selected > 0 {
                     *selected -= 1;
                 } else if filtered_count > 0 {
@@ -772,10 +790,7 @@ fn handle_branch_picker(
                 ..
             } = &mut app.mode
             {
-                let filtered_count = branches
-                    .iter()
-                    .filter(|b| b.contains(filter.as_str()))
-                    .count();
+                let filtered_count = fuzzy::fuzzy_filter_strings(branches, filter).len();
                 if *selected + 1 < filtered_count {
                     *selected += 1;
                 }
@@ -793,8 +808,7 @@ fn handle_branch_picker(
                 selected,
             } = mode
             {
-                let filtered: Vec<&String> =
-                    branches.iter().filter(|b| b.contains(&filter)).collect();
+                let filtered = fuzzy::fuzzy_filter_strings(&branches, &filter);
                 let branch = if filtered.is_empty() {
                     if filter.is_empty() {
                         default_branch
@@ -1147,6 +1161,10 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
 
+    fn make_terminal() -> Term {
+        Terminal::new(CrosstermBackend::new(io::stdout())).unwrap()
+    }
+
     fn hive(dir_name: &str, repo_name: &str) -> HiveInfo {
         HiveInfo {
             dir_name: dir_name.to_string(),
@@ -1350,6 +1368,49 @@ mod tests {
         assert_eq!(app.selected, 2);
         assert_eq!(app.status_message.as_deref(), Some("Jumped to 'beta'"));
     }
+
+    #[test]
+    fn ctrl_space_during_input_keeps_sidebar_focus_and_overlay() {
+        let mut app = make_app(vec![], 0);
+        let mut terminal = make_terminal();
+        app.focus = Focus::Sidebar;
+        app.mode = AppMode::Input {
+            prompt: "Comb name".to_string(),
+            value: String::new(),
+            action: InputAction::AddHiveUrl,
+        };
+
+        handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+            &mut terminal,
+        )
+        .unwrap();
+
+        assert!(matches!(app.mode, AppMode::Input { .. }));
+        assert!(matches!(app.focus, Focus::Sidebar));
+    }
+
+    #[test]
+    fn input_overlay_handles_escape_even_if_focus_was_terminal() {
+        let mut app = make_app(vec![], 0);
+        let mut terminal = make_terminal();
+        app.focus = Focus::Terminal;
+        app.mode = AppMode::Input {
+            prompt: "Comb name".to_string(),
+            value: "draft".to_string(),
+            action: InputAction::AddHiveUrl,
+        };
+
+        handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::from(KeyCode::Esc),
+            &mut terminal,
+        )
+        .unwrap();
+
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
 }
 
 fn handle_input_submit(
@@ -1377,14 +1438,14 @@ fn handle_input_submit(
                 match list_branches(&app.beehive_dir, &hive_dir_name) {
                     Ok((branches, default_branch)) => {
                         app.status_message = None;
-                        app.mode = AppMode::BranchPicker {
+                        app.enter_sidebar_mode(AppMode::BranchPicker {
                             hive_dir_name,
                             comb_name: value,
                             branches,
                             default_branch,
                             filter: String::new(),
                             selected: 0,
-                        };
+                        });
                     }
                     Err(_) => {
                         // Fallback: just use text input for branch
@@ -1394,11 +1455,11 @@ fn handle_input_submit(
                             .unwrap_or_else(|| "main".to_string());
                         app.status_message =
                             Some("Could not fetch branches, type manually".to_string());
-                        app.mode = AppMode::Input {
+                        app.enter_sidebar_mode(AppMode::Input {
                             prompt: format!("Branch [{}]", default_branch),
                             value: String::new(),
                             action: InputAction::NewCombName { hive_dir_name },
-                        };
+                        });
                     }
                 }
             }
