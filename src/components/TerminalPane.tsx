@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITerminalOptions, type ITerminalInitOnlyOptions } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
+
+// vtExtensions is supported at runtime but not yet in xterm.js type definitions
+type TerminalOptions = ITerminalOptions & ITerminalInitOnlyOptions & {
+  vtExtensions?: { kittyKeyboard?: boolean };
+};
 
 interface DragDropPayload {
   paths: string[];
@@ -85,7 +90,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
         brightCyan: "#94e2d5",
         brightWhite: "#a6adc8",
       },
-    });
+    } as TerminalOptions);
 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
