@@ -287,6 +287,29 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     }
   }
 
+  const handleReorderCombs = useCallback(async (combIds: string[]) => {
+    if (!activeHiveDirName) return;
+    const hiveDirName = activeHiveDirName;
+
+    // Optimistic update
+    updateRuntime(hiveDirName, (rt) => {
+      const byId = new Map(rt.combs.map((c) => [c.id, c]));
+      const reordered = combIds.map((id) => byId.get(id)).filter(Boolean) as Comb[];
+      // Append any combs not in the list (safety)
+      const idSet = new Set(combIds);
+      for (const c of rt.combs) {
+        if (!idSet.has(c.id)) reordered.push(c);
+      }
+      return { ...rt, combs: reordered };
+    });
+
+    try {
+      await invoke("reorder_combs", { beehiveDir, dirName: hiveDirName, combIds });
+    } catch (e) {
+      console.error("Failed to reorder combs:", e);
+    }
+  }, [activeHiveDirName, beehiveDir]);
+
   async function saveCustomButtons(buttons: CustomButton[]) {
     if (!activeHiveDirName) return;
     try {
@@ -363,6 +386,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
           setCopyCombLoading(false);
           setOverlay({ type: "copyComb", sourceCombId: combId });
         }}
+        onReorderCombs={handleReorderCombs}
       />
 
       <div className="main-content">

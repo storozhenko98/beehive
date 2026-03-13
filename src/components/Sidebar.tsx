@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import type { HiveInfo, Comb } from "../types";
+import { useSortable } from "../hooks/useSortable";
 
 interface Props {
   hives: HiveInfo[];
@@ -14,6 +15,7 @@ interface Props {
   onHelp: () => void;
   onDeleteComb: (combId: string) => void;
   onCopyComb: (combId: string) => void;
+  onReorderCombs: (combIds: string[]) => void;
 }
 
 export function Sidebar({
@@ -29,12 +31,13 @@ export function Sidebar({
   onHelp,
   onDeleteComb,
   onCopyComb,
+  onReorderCombs,
 }: Props) {
   const [hiveDropdownOpen, setHiveDropdownOpen] = useState(false);
   const hiveDropdownRef = useRef<HTMLDivElement>(null);
-
-  // Delete confirmation: just track which combId is in "confirm" state
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const { isDragging, getItemProps } = useSortable(combs, onReorderCombs);
 
   // Close hive dropdown on outside click
   useEffect(() => {
@@ -90,66 +93,77 @@ export function Sidebar({
       {/* Comb list */}
       <div className="sidebar-section sidebar-combs">
         <div className="sidebar-section-label">Combs</div>
-        <div className="sidebar-comb-list">
-          {combs.map((comb) => (
-            <div
-              key={comb.id}
-              className={`sidebar-comb-item ${comb.id === activeCombId ? "active" : ""} ${comb.cloning ? "cloning" : ""}`}
-              onClick={() => !comb.cloning && onSelectComb(comb)}
-            >
-              <div className="sidebar-comb-info">
-                <span className="sidebar-comb-name">{comb.name}</span>
-                {comb.cloning ? (
-                  <span className="sidebar-comb-cloning">Cloning...</span>
-                ) : (
-                  <span className="sidebar-comb-branch">{comb.branch}</span>
+        <div className={`sidebar-comb-list ${isDragging ? "is-dragging" : ""}`}>
+          {combs.map((comb, idx) => {
+            const { ref, onPointerDown, style, isDragged } = getItemProps(idx);
+
+            return (
+              <div
+                key={comb.id}
+                ref={ref}
+                className={`sidebar-comb-item ${comb.id === activeCombId ? "active" : ""} ${comb.cloning ? "cloning" : ""} ${isDragged ? "dragging" : ""}`}
+                style={style}
+                onPointerDown={(e) => {
+                  if (!comb.cloning) onPointerDown(e);
+                }}
+                onClick={() => {
+                  if (!comb.cloning && !isDragging) onSelectComb(comb);
+                }}
+              >
+                <div className="sidebar-comb-info">
+                  <span className="sidebar-comb-name">{comb.name}</span>
+                  {comb.cloning ? (
+                    <span className="sidebar-comb-cloning">Cloning...</span>
+                  ) : (
+                    <span className="sidebar-comb-branch">{comb.branch}</span>
+                  )}
+                </div>
+                {!comb.cloning && (
+                  <>
+                    {confirmDeleteId === comb.id ? (
+                      <div className="delete-confirm-inline" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="btn-sm btn-danger"
+                          onClick={() => {
+                            setConfirmDeleteId(null);
+                            onDeleteComb(comb.id);
+                          }}
+                        >
+                          Sure?
+                        </button>
+                        <button className="btn-sm" onClick={() => setConfirmDeleteId(null)}>
+                          No
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="sidebar-comb-actions">
+                        <button
+                          className="sidebar-comb-copy"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onCopyComb(comb.id);
+                          }}
+                          title="Copy comb"
+                        >
+                          &#x2398;
+                        </button>
+                        <button
+                          className="sidebar-comb-delete"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDeleteId(comb.id);
+                          }}
+                          title="Delete comb"
+                        >
+                          x
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
-              {!comb.cloning && (
-                <>
-                  {confirmDeleteId === comb.id ? (
-                    <div className="delete-confirm-inline" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        className="btn-sm btn-danger"
-                        onClick={() => {
-                          setConfirmDeleteId(null);
-                          onDeleteComb(comb.id);
-                        }}
-                      >
-                        Sure?
-                      </button>
-                      <button className="btn-sm" onClick={() => setConfirmDeleteId(null)}>
-                        No
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="sidebar-comb-actions">
-                      <button
-                        className="sidebar-comb-copy"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onCopyComb(comb.id);
-                        }}
-                        title="Copy comb"
-                      >
-                        &#x2398;
-                      </button>
-                      <button
-                        className="sidebar-comb-delete"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDeleteId(comb.id);
-                        }}
-                        title="Delete comb"
-                      >
-                        x
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          ))}
+            );
+          })}
           {activeHive && combs.length === 0 && (
             <div className="sidebar-empty">No combs yet</div>
           )}

@@ -768,6 +768,26 @@ pub async fn copy_comb(
     Ok(comb)
 }
 
+#[tauri::command]
+pub async fn reorder_combs(
+    beehive_dir: String,
+    dir_name: String,
+    comb_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    let mut ordered: Vec<Comb> = Vec::with_capacity(state.combs.len());
+    for id in &comb_ids {
+        if let Some(pos) = state.combs.iter().position(|c| c.id == *id) {
+            ordered.push(state.combs.remove(pos));
+        }
+    }
+    ordered.append(&mut state.combs);
+    state.combs = ordered;
+
+    save_hive_state(&beehive_dir, &dir_name, &state)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliStatusResult {

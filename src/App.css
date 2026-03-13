@@ -792,6 +792,25 @@ select option {
   50% { opacity: 1; }
 }
 
+/* The grabbed item lifts up */
+.sidebar-comb-item.dragging {
+  position: relative;
+  z-index: 10;
+  background: var(--bg-surface);
+  border-left-color: var(--accent);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(137, 180, 250, 0.3);
+  scale: 1.02;
+}
+
+/* Disable hover and dim non-dragged items while dragging */
+.sidebar-comb-list.is-dragging .sidebar-comb-item:not(.dragging) {
+  opacity: 0.7;
+}
+
+.sidebar-comb-list.is-dragging .sidebar-comb-item:hover {
+  background: none;
+}
+
 .sidebar-empty {
   padding: 12px 16px;
   color: var(--text-muted);

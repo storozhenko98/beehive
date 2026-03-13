@@ -45,6 +45,7 @@ pub fn run() {
             hive::save_comb_panes,
             hive::get_comb_panes,
             hive::save_custom_buttons,
+            hive::reorder_combs,
             hive::install_cli,
             hive::uninstall_cli,
             hive::cli_status,
