@@ -5,6 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 
 // vtExtensions is supported at runtime but not yet in xterm.js type definitions
@@ -94,7 +95,9 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    terminal.loadAddon(new WebLinksAddon());
+    terminal.loadAddon(new WebLinksAddon((_event, uri) => {
+      openUrl(uri).catch(() => {});
+    }));
     const unicode11 = new Unicode11Addon();
     terminal.loadAddon(unicode11);
     terminal.unicode.activeVersion = "11";
