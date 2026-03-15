@@ -1438,13 +1438,18 @@ fn handle_input_submit(
                 match list_branches(&app.beehive_dir, &hive_dir_name) {
                     Ok((branches, default_branch)) => {
                         app.status_message = None;
+                        // Pre-select the default branch in the picker
+                        let selected = branches
+                            .iter()
+                            .position(|b| b == &default_branch)
+                            .unwrap_or(0);
                         app.enter_sidebar_mode(AppMode::BranchPicker {
                             hive_dir_name,
                             comb_name: value,
                             branches,
                             default_branch,
                             filter: String::new(),
-                            selected: 0,
+                            selected,
                         });
                     }
                     Err(_) => {
