@@ -388,15 +388,23 @@ fn check_pending_clone(app: &mut App) {
             app.activity = None;
             match result.comb {
                 Ok(comb) => {
-                    app.status_message = Some(format!("Created '{}'", result.comb_name));
-                    let id = comb.id.clone();
-                    let path = comb.path.clone();
-                    app.active_comb_id = Some(id.clone());
-                    app.refresh();
-                    app.open_terminal(&id, &path);
+                    if result.is_copy {
+                        // Copy: auto-switch to new comb (existing behavior)
+                        app.status_message = Some(format!("Copied '{}'", result.comb_name));
+                        let id = comb.id.clone();
+                        let path = comb.path.clone();
+                        app.active_comb_id = Some(id.clone());
+                        app.refresh();
+                        app.open_terminal(&id, &path);
+                    } else {
+                        // Clone: graceful — don't switch focus, user stays where they are
+                        app.status_message = Some(format!("Created '{}'", result.comb_name));
+                        app.refresh();
+                    }
                 }
                 Err(e) => {
-                    app.status_message = Some(format!("Clone failed: {}", e));
+                    let action = if result.is_copy { "Copy" } else { "Clone" };
+                    app.status_message = Some(format!("{} failed: {}", action, e));
                     app.refresh();
                 }
             }
@@ -965,6 +973,7 @@ fn start_async_clone(
             comb: result,
             comb_name: comb_name_clone,
             hive_dir_name: hive_dir_clone,
+            is_copy: false,
         });
     });
 
@@ -1033,6 +1042,7 @@ fn start_async_copy(
             comb: result,
             comb_name: comb_name_clone,
             hive_dir_name: hive_dir_clone,
+            is_copy: true,
         });
     });
 
