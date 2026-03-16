@@ -9,8 +9,10 @@ use crate::terminal::EmbeddedTerminal;
 pub struct CloneResult {
     pub comb: Result<Comb, String>,
     pub comb_name: String,
-    #[allow(dead_code)]
     pub hive_dir_name: String,
+    /// If true, this was a copy operation (auto-switch to new comb).
+    /// If false, this was a clone operation (graceful, don't switch focus).
+    pub is_copy: bool,
 }
 
 pub struct DeleteResult {
