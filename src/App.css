@@ -772,8 +772,23 @@ select option {
   background: rgba(243, 139, 168, 0.1);
 }
 
+/* Comb with any operation in progress */
+.sidebar-comb-item.has-operation {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sidebar-comb-item.has-operation:hover {
+  background: transparent;
+}
+
+.sidebar-comb-item.deleting {
+  opacity: 0.4;
+}
+
+/* Legacy cloning class for backward compat */
 .sidebar-comb-item.cloning {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: default;
 }
 
@@ -781,13 +796,23 @@ select option {
   background: transparent;
 }
 
+.sidebar-comb-operation {
+  font-size: 10px;
+  color: var(--accent);
+  animation: pulse-operation 1.5s ease-in-out infinite;
+}
+
+.sidebar-comb-item.deleting .sidebar-comb-operation {
+  color: var(--danger);
+}
+
 .sidebar-comb-cloning {
   font-size: 10px;
   color: var(--accent);
-  animation: pulse-cloning 1.5s ease-in-out infinite;
+  animation: pulse-operation 1.5s ease-in-out infinite;
 }
 
-@keyframes pulse-cloning {
+@keyframes pulse-operation {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 1; }
 }
@@ -919,7 +944,23 @@ select option {
   padding: 8px 12px;
   display: flex;
   flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-footer-buttons {
+  display: flex;
+  flex-direction: column;
   gap: 2px;
+}
+
+.sidebar-ops-indicator {
+  font-size: 10px;
+  color: var(--accent);
+  padding: 4px 8px;
+  background: rgba(137, 180, 250, 0.1);
+  border-radius: 4px;
+  text-align: center;
+  animation: pulse-operation 2s ease-in-out infinite;
 }
 
 .sidebar-footer-btn {
@@ -1535,4 +1576,85 @@ code {
   color: var(--text-muted);
   flex-shrink: 0;
   margin-left: auto;
+}
+
+/* ---- Toast notifications ---- */
+
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  animation: toast-slide-in 0.2s ease-out;
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast-error {
+  border-color: var(--danger);
+  background: rgba(243, 139, 168, 0.1);
+}
+
+.toast-success {
+  border-color: var(--success);
+  background: rgba(166, 227, 161, 0.1);
+}
+
+.toast-message {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.toast-dismiss:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+/* Hive status indicator */
+.hive-status {
+  font-size: 10px;
+  color: var(--accent);
+  animation: pulse-operation 1.5s ease-in-out infinite;
+}
+
+.hive-item-deleting {
+  opacity: 0.5;
 }

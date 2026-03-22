@@ -26,6 +26,9 @@ export interface PaneConfig {
   args?: string[];
 }
 
+// Operation types for concurrent comb operations
+export type CombOperationType = "cloning" | "copying" | "deleting";
+
 export interface Comb {
   id: string;
   name: string; // user-chosen name
@@ -33,7 +36,25 @@ export interface Comb {
   path: string; // absolute path to the workspace clone
   createdAt: string;
   panes: PaneConfig[];
-  cloning?: boolean;
+  cloning?: boolean; // deprecated, use operation instead
+  operation?: CombOperationType; // current operation in progress
+}
+
+// Event payload from backend for operation completion
+export interface CombOperationResult {
+  hiveDirName: string;
+  combId: string;
+  opType: CombOperationType;
+  success: boolean;
+  error?: string;
+}
+
+// Event payload for hive-level operations
+export interface HiveOperationResult {
+  hiveDirName: string;
+  opType: "deleting";
+  success: boolean;
+  error?: string;
 }
 
 export interface HiveState {

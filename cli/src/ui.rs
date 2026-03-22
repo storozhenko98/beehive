@@ -133,7 +133,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         .alignment(Alignment::Right)
         .style(Style::default().bg(MANTLE));
         frame.render_widget(right, area);
-    } else if let Some(ref msg) = app.activity {
+    } else if let Some(ref msg) = app.activity_summary() {
         const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Sidebar } from "./Sidebar";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewCombModal } from "./NewCombModal";
@@ -8,7 +9,20 @@ import { CustomButtonsModal } from "./CustomButtonsModal";
 import { HiveListScreen } from "./HiveListScreen";
 import { SettingsScreen } from "./SettingsScreen";
 import { HelpScreen } from "./HelpScreen";
-import type { HiveInfo, Comb, PaneConfig, CustomButton } from "../types";
+import { Toast } from "./Toast";
+import type { HiveInfo, Comb, PaneConfig, CustomButton, CombOperationResult, HiveOperationResult } from "../types";
+
+// Normalize comb: convert legacy `cloning` to `operation`
+function normalizeComb(comb: Comb): Comb {
+  if (comb.cloning && !comb.operation) {
+    return { ...comb, operation: "cloning" };
+  }
+  return comb;
+}
+
+function normalizeCombs(combs: Comb[]): Comb[] {
+  return combs.map(normalizeComb);
+}
 
 interface Props {
   beehiveDir: string;
@@ -39,8 +53,27 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
   // Per-hive state keyed by dirName — survives hive switches
   const [hiveRuntimes, setHiveRuntimes] = useState<Map<string, HiveRuntime>>(new Map());
   const [overlay, setOverlay] = useState<Overlay>({ type: "manageHives" });
+  
+  // Track hives being deleted
+  const [hivesDeleting, setHivesDeleting] = useState<Set<string>>(new Set());
+  
+  // Toast notifications for operation errors
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: "error" | "success" }>>([]);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  const addToast = useCallback((message: string, type: "error" | "success" = "error") => {
+    const id = crypto.randomUUID();
+    setToasts((prev) => [...prev, { id, message, type }]);
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
+  }, []);
+  
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   const activeHive = hives.find((h) => h.dirName === activeHiveDirName) ?? null;
   const activeRuntime = activeHiveDirName ? hiveRuntimes.get(activeHiveDirName) : undefined;
@@ -49,6 +82,100 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
   useEffect(() => {
     loadHives();
   }, [beehiveDir]);
+  
+  // Listen for comb operation completion events
+  useEffect(() => {
+    const unlistenComb = listen<CombOperationResult>("comb-operation-done", (event) => {
+      const { hiveDirName, combId, opType, success, error } = event.payload;
+      
+      if (opType === "deleting") {
+        if (success) {
+          // Remove comb from state
+          updateRuntime(hiveDirName, (rt) => {
+            const newOpened = new Set(rt.openedCombs);
+            newOpened.delete(combId);
+            const newPanes = new Map(rt.panesByComb);
+            newPanes.delete(combId);
+            const remaining = rt.combs.filter((c) => c.id !== combId);
+            const newActive = rt.activeCombId === combId
+              ? (remaining.length > 0 ? remaining[0].id : null)
+              : rt.activeCombId;
+            return { 
+              ...rt, 
+              combs: remaining,
+              openedCombs: newOpened, 
+              panesByComb: newPanes, 
+              activeCombId: newActive 
+            };
+          });
+        } else {
+          // Revert operation flag on failure
+          updateRuntime(hiveDirName, (rt) => ({
+            ...rt,
+            combs: rt.combs.map((c) =>
+              c.id === combId ? { ...c, operation: undefined } : c
+            ),
+          }));
+          if (error) {
+            addToast(`Delete failed: ${error}`);
+          }
+        }
+      } else {
+        // cloning or copying
+        if (success) {
+          // Clear operation flag
+          updateRuntime(hiveDirName, (rt) => ({
+            ...rt,
+            combs: rt.combs.map((c) =>
+              c.id === combId ? { ...c, operation: undefined, cloning: false } : c
+            ),
+          }));
+        } else {
+          // Remove the failed comb from runtime
+          updateRuntime(hiveDirName, (rt) => ({
+            ...rt,
+            combs: rt.combs.filter((c) => c.id !== combId),
+          }));
+          if (error) {
+            addToast(`${opType === "cloning" ? "Clone" : "Copy"} failed: ${error}`);
+          }
+        }
+      }
+    });
+    
+    const unlistenHive = listen<HiveOperationResult>("hive-operation-done", (event) => {
+      const { hiveDirName, success, error } = event.payload;
+      
+      // Remove from deleting set
+      setHivesDeleting((prev) => {
+        const next = new Set(prev);
+        next.delete(hiveDirName);
+        return next;
+      });
+      
+      if (success) {
+        // Remove hive from state
+        setHives((prev) => prev.filter((h) => h.dirName !== hiveDirName));
+        // Clear runtime for this hive
+        setHiveRuntimes((prev) => {
+          const next = new Map(prev);
+          next.delete(hiveDirName);
+          return next;
+        });
+        // If this was the active hive, clear it
+        setActiveHiveDirName((prev) => prev === hiveDirName ? null : prev);
+      } else {
+        if (error) {
+          addToast(`Delete hive failed: ${error}`);
+        }
+      }
+    });
+    
+    return () => {
+      unlistenComb.then((fn) => fn());
+      unlistenHive.then((fn) => fn());
+    };
+  }, [addToast]);
 
   // Periodically refresh comb branches from git
   useEffect(() => {
@@ -59,11 +186,13 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
           beehiveDir,
           dirName: activeHiveDirName,
         });
+        const normalized = normalizeCombs(list);
         updateRuntime(activeHiveDirName, (rt) => ({
           ...rt,
           combs: rt.combs.map((c) => {
-            const fresh = list.find((f) => f.id === c.id);
-            return fresh ? { ...c, branch: fresh.branch } : c;
+            const fresh = normalized.find((f) => f.id === c.id);
+            // Preserve local operation state if not in fresh data
+            return fresh ? { ...c, branch: fresh.branch, operation: fresh.operation || c.operation } : c;
           }),
         }));
       } catch { /* ignore */ }
@@ -107,7 +236,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
           beehiveDir,
           dirName: hive.dirName,
         });
-        updateRuntime(hive.dirName, (rt) => ({ ...rt, combs: list }));
+        updateRuntime(hive.dirName, (rt) => ({ ...rt, combs: normalizeCombs(list) }));
       } catch (e) {
         console.error("Failed to list combs:", e);
       }
@@ -205,24 +334,49 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     if (!activeHiveDirName) return;
     const hiveDirName = activeHiveDirName;
 
+    // Check if comb already has an operation in progress
+    const runtime = hiveRuntimes.get(hiveDirName);
+    const comb = runtime?.combs.find((c) => c.id === combId);
+    if (comb?.operation) {
+      addToast("Cannot delete comb with operation in progress");
+      return;
+    }
+
+    // Mark comb as deleting in UI immediately
+    updateRuntime(hiveDirName, (rt) => ({
+      ...rt,
+      combs: rt.combs.map((c) =>
+        c.id === combId ? { ...c, operation: "deleting" } : c
+      ),
+    }));
+
+    // Close the comb if it's open (but don't remove from combs list yet)
     updateRuntime(hiveDirName, (rt) => {
       const newOpened = new Set(rt.openedCombs);
       newOpened.delete(combId);
       const newPanes = new Map(rt.panesByComb);
       newPanes.delete(combId);
-      const remaining = rt.combs.filter((c) => c.id !== combId);
       const newActive = rt.activeCombId === combId
-        ? (remaining.length > 0 ? remaining[0].id : null)
+        ? (rt.combs.filter((c) => c.id !== combId && !c.operation).find(() => true)?.id ?? null)
         : rt.activeCombId;
       return { ...rt, openedCombs: newOpened, panesByComb: newPanes, activeCombId: newActive };
     });
 
     try {
-      await invoke("delete_comb", { beehiveDir, dirName: hiveDirName, combId });
-      const list = await invoke<Comb[]>("list_combs", { beehiveDir, dirName: hiveDirName });
-      updateRuntime(hiveDirName, (rt) => ({ ...rt, combs: list }));
+      // Phase 1: Mark in backend
+      await invoke("delete_comb_start", { beehiveDir, dirName: hiveDirName, combId });
+      // Phase 2: Fire background delete (event will handle completion)
+      invoke("delete_comb_run", { beehiveDir, dirName: hiveDirName, combId });
     } catch (e) {
-      console.error("Failed to delete comb:", e);
+      console.error("Failed to start comb deletion:", e);
+      // Revert UI state
+      updateRuntime(hiveDirName, (rt) => ({
+        ...rt,
+        combs: rt.combs.map((c) =>
+          c.id === combId ? { ...c, operation: undefined } : c
+        ),
+      }));
+      addToast(`Failed to delete comb: ${e}`);
     }
   }
 
@@ -230,60 +384,73 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     if (!activeHiveDirName) return;
     const hiveDirName = activeHiveDirName;
     setOverlay(null);
+    
+    // Normalize the comb to use operation field
+    const normalizedComb = normalizeComb(comb);
+    
     updateRuntime(hiveDirName, (rt) => ({
       ...rt,
-      combs: [...rt.combs, comb],
+      combs: [...rt.combs, normalizedComb],
     }));
-    // Do NOT open the comb yet — it's still cloning
-    // Fire background clone
+    
+    // Fire background clone - event listener handles completion
     invoke("create_comb_clone", {
       beehiveDir,
       dirName: hiveDirName,
       combId: comb.id,
-    })
-      .then(() => {
-        // Clone succeeded — mark cloning = false
-        updateRuntime(hiveDirName, (rt) => ({
-          ...rt,
-          combs: rt.combs.map((c) =>
-            c.id === comb.id ? { ...c, cloning: false } : c
-          ),
-        }));
-      })
-      .catch((e) => {
-        console.error("Clone failed:", e);
-        // Remove the failed comb from runtime
-        updateRuntime(hiveDirName, (rt) => ({
-          ...rt,
-          combs: rt.combs.filter((c) => c.id !== comb.id),
-        }));
-      });
+    }).catch((e) => {
+      // This catch is for immediate invocation errors only
+      // Actual clone failures are handled via events
+      console.error("Failed to start clone:", e);
+    });
   }
 
-  const [copyCombLoading, setCopyCombLoading] = useState(false);
   const [copyCombError, setCopyCombError] = useState("");
 
   async function handleCopyComb(sourceCombId: string, newName: string) {
     if (!activeHiveDirName) return;
-    setCopyCombLoading(true);
+    const hiveDirName = activeHiveDirName;
+    
+    // Check if source comb is being deleted
+    const runtime = hiveRuntimes.get(hiveDirName);
+    const sourceComb = runtime?.combs.find((c) => c.id === sourceCombId);
+    if (sourceComb?.operation === "deleting") {
+      setCopyCombError("Cannot copy a comb that is being deleted");
+      return;
+    }
+    
     setCopyCombError("");
+    
     try {
-      const comb = await invoke<Comb>("copy_comb", {
+      // Phase 1: Create comb entry (quick)
+      const comb = await invoke<Comb>("copy_comb_start", {
         beehiveDir,
-        dirName: activeHiveDirName,
+        dirName: hiveDirName,
         sourceCombId,
         newName,
       });
+      
+      // Close modal immediately
       setOverlay(null);
-      setCopyCombLoading(false);
-      updateRuntime(activeHiveDirName, (rt) => ({
+      
+      // Add comb to runtime (with operation: "copying")
+      const normalizedComb = normalizeComb(comb);
+      updateRuntime(hiveDirName, (rt) => ({
         ...rt,
-        combs: [...rt.combs, comb],
+        combs: [...rt.combs, normalizedComb],
       }));
-      openComb(comb);
+      
+      // Phase 2: Fire background copy - event listener handles completion
+      invoke("copy_comb_run", {
+        beehiveDir,
+        dirName: hiveDirName,
+        combId: comb.id,
+        sourceCombId,
+      }).catch((e) => {
+        console.error("Failed to start copy:", e);
+      });
     } catch (e) {
       setCopyCombError(`${e}`);
-      setCopyCombLoading(false);
     }
   }
 
@@ -342,6 +509,34 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     },
     [activeHiveDirName]
   );
+  
+  // Async hive deletion
+  async function handleDeleteHive(dirName: string) {
+    // Check if any combs in this hive have active operations
+    const runtime = hiveRuntimes.get(dirName);
+    if (runtime?.combs.some((c) => c.operation)) {
+      addToast("Cannot delete hive while comb operations are in progress");
+      return;
+    }
+    
+    // Mark hive as deleting
+    setHivesDeleting((prev) => new Set([...prev, dirName]));
+    
+    try {
+      // Phase 1: Check if hive can be deleted
+      await invoke("delete_hive_start", { beehiveDir, dirName });
+      // Phase 2: Fire background delete (event will handle completion)
+      invoke("delete_hive_run", { beehiveDir, dirName });
+    } catch (e) {
+      console.error("Failed to start hive deletion:", e);
+      setHivesDeleting((prev) => {
+        const next = new Set(prev);
+        next.delete(dirName);
+        return next;
+      });
+      addToast(`Failed to delete hive: ${e}`);
+    }
+  }
 
   // Collect ALL opened combs across ALL hives for rendering
   const allOpenedCombs: { hive: HiveInfo; comb: Comb; panes: PaneConfig[]; focusedPaneId: string | null; isVisible: boolean }[] = [];
@@ -383,7 +578,6 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         onDeleteComb={handleDeleteComb}
         onCopyComb={(combId) => {
           setCopyCombError("");
-          setCopyCombLoading(false);
           setOverlay({ type: "copyComb", sourceCombId: combId });
         }}
         onReorderCombs={handleReorderCombs}
@@ -442,7 +636,6 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
           <CopyCombModal
             sourceCombName={sourceComb.name}
             existingNames={currentCombs.map((c) => c.name)}
-            loading={copyCombLoading}
             error={copyCombError}
             onCopy={(newName) => handleCopyComb(overlay.sourceCombId, newName)}
             onClose={() => setOverlay(null)}
@@ -469,6 +662,8 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
               loadHives();
             } : undefined}
             backLabel={activeHive ? `Back to ${activeHive.repoName}` : undefined}
+            hivesDeleting={hivesDeleting}
+            onDeleteHive={handleDeleteHive}
           />
         </div>
       )}
@@ -520,6 +715,9 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
           onClose={() => setOverlay(null)}
         />
       )}
+      
+      {/* Toast notifications */}
+      <Toast toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
