@@ -119,6 +119,7 @@ pub enum AppMode {
     Input {
         prompt: String,
         value: String,
+        cursor: usize,
         action: InputAction,
     },
     Confirm {
@@ -131,6 +132,7 @@ pub enum AppMode {
         branches: Vec<String>,
         default_branch: String,
         filter: String,
+        filter_cursor: usize,
         selected: usize,
     },
     /// Reordering a comb within its hive. Up/Down to move, m/Enter to confirm, Esc to cancel.
@@ -144,6 +146,7 @@ pub enum AppMode {
     CombFinder {
         targets: Vec<CombFinderTarget>,
         filter: String,
+        filter_cursor: usize,
         selected: usize,
     },
     DeleteCombSelection {
@@ -449,6 +452,7 @@ impl App {
         self.enter_sidebar_mode(AppMode::CombFinder {
             targets,
             filter: String::new(),
+            filter_cursor: 0,
             selected: 0,
         });
     }
@@ -871,6 +875,7 @@ impl App {
             self.enter_sidebar_mode(AppMode::Input {
                 prompt: "Comb name".to_string(),
                 value: String::new(),
+                cursor: 0,
                 action: InputAction::NewCombName {
                     hive_dir_name: dir_name,
                 },
@@ -901,6 +906,7 @@ impl App {
             self.enter_sidebar_mode(AppMode::Input {
                 prompt: format!("Copy '{}' as", comb.name),
                 value: String::new(),
+                cursor: 0,
                 action: InputAction::CopyCombName {
                     hive_dir_name: hive_dir_name.clone(),
                     source_comb_name: comb.name.clone(),
@@ -1023,6 +1029,7 @@ impl App {
         self.enter_sidebar_mode(AppMode::Input {
             prompt: "Repository (owner/repo or URL)".to_string(),
             value: String::new(),
+            cursor: 0,
             action: InputAction::AddHiveUrl,
         });
     }

@@ -59,7 +59,12 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
 
     // Overlays
     match &app.mode {
-        AppMode::Input { prompt, value, .. } => render_input(frame, prompt, value),
+        AppMode::Input {
+            prompt,
+            value,
+            cursor,
+            ..
+        } => render_input(frame, prompt, value, *cursor),
         AppMode::Confirm { message, .. } => render_confirm(frame, message),
         AppMode::Help => render_help(frame),
         AppMode::Settings { preflight } => render_settings(frame, app, preflight),
@@ -67,6 +72,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
             branches,
             default_branch,
             filter,
+            filter_cursor,
             selected,
             comb_name,
             ..
@@ -75,14 +81,16 @@ pub fn render(frame: &mut Frame, app: &App) -> Rect {
             branches,
             default_branch,
             filter,
+            *filter_cursor,
             *selected,
             comb_name,
         ),
         AppMode::CombFinder {
             targets,
             filter,
+            filter_cursor,
             selected,
-        } => render_comb_finder(frame, targets, filter, *selected),
+        } => render_comb_finder(frame, targets, filter, *filter_cursor, *selected),
         AppMode::Normal | AppMode::MovingComb { .. } | AppMode::DeleteCombSelection { .. } => {}
     }
 
@@ -732,11 +740,42 @@ fn render_help(frame: &mut Frame) {
     frame.render_widget(paragraph, inner);
 }
 
+/// Build spans for a filter input with cursor support.
+fn filter_cursor_spans(filter: &str, cursor: usize, cursor_color: Color) -> Vec<Span<'static>> {
+    let char_len = filter.chars().count();
+    let clamped = cursor.min(char_len);
+    let before: String = filter.chars().take(clamped).collect();
+    let after: String = filter.chars().skip(clamped).collect();
+
+    let mut spans = vec![
+        Span::styled(" / ".to_string(), Style::default().fg(OVERLAY0)),
+        Span::styled(before, Style::default().fg(TEXT)),
+    ];
+    if after.is_empty() {
+        spans.push(Span::styled(
+            "_".to_string(),
+            Style::default().fg(cursor_color),
+        ));
+    } else {
+        let cursor_ch: String = after.chars().take(1).collect();
+        let rest: String = after.chars().skip(1).collect();
+        spans.push(Span::styled(
+            cursor_ch,
+            Style::default().fg(MANTLE).bg(cursor_color),
+        ));
+        if !rest.is_empty() {
+            spans.push(Span::styled(rest, Style::default().fg(TEXT)));
+        }
+    }
+    spans
+}
+
 fn render_branch_picker(
     frame: &mut Frame,
     branches: &[String],
     default_branch: &str,
     filter: &str,
+    filter_cursor: usize,
     selected: usize,
     comb_name: &str,
 ) {
@@ -761,12 +800,8 @@ fn render_branch_picker(
 
     // Filter input line
     let filter_area = Rect::new(inner.x, inner.y, inner.width, 1);
-    let filter_line = Paragraph::new(Line::from(vec![
-        Span::styled(" / ", Style::default().fg(OVERLAY0)),
-        Span::styled(filter, Style::default().fg(TEXT)),
-        Span::styled("_", Style::default().fg(BLUE)),
-    ]))
-    .style(Style::default().bg(SURFACE0));
+    let filter_line = Paragraph::new(Line::from(filter_cursor_spans(filter, filter_cursor, BLUE)))
+        .style(Style::default().bg(SURFACE0));
     frame.render_widget(filter_line, filter_area);
 
     // Branch list
@@ -825,6 +860,7 @@ fn render_comb_finder(
     frame: &mut Frame,
     targets: &[crate::app::CombFinderTarget],
     filter: &str,
+    filter_cursor: usize,
     selected: usize,
 ) {
     let max_h = (frame.area().height - 4).min(18);
@@ -846,12 +882,8 @@ fn render_comb_finder(
     }
 
     let filter_area = Rect::new(inner.x, inner.y, inner.width, 1);
-    let filter_line = Paragraph::new(Line::from(vec![
-        Span::styled(" / ", Style::default().fg(OVERLAY0)),
-        Span::styled(filter, Style::default().fg(TEXT)),
-        Span::styled("_", Style::default().fg(BLUE)),
-    ]))
-    .style(Style::default().bg(SURFACE0));
+    let filter_line = Paragraph::new(Line::from(filter_cursor_spans(filter, filter_cursor, BLUE)))
+        .style(Style::default().bg(SURFACE0));
     frame.render_widget(filter_line, filter_area);
 
     let list_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
@@ -1100,7 +1132,7 @@ fn convert_color(c: vt100::Color) -> Color {
     }
 }
 
-fn render_input(frame: &mut Frame, prompt: &str, value: &str) {
+fn render_input(frame: &mut Frame, prompt: &str, value: &str, cursor: usize) {
     let w = (frame.area().width / 2)
         .max(30)
         .min(frame.area().width.saturating_sub(2));
@@ -1114,12 +1146,30 @@ fn render_input(frame: &mut Frame, prompt: &str, value: &str) {
         .border_style(Style::default().fg(YELLOW))
         .style(Style::default().bg(MANTLE));
 
-    let paragraph = Paragraph::new(Line::from(vec![
-        Span::styled(format!(" {}", value), Style::default().fg(TEXT)),
-        Span::styled("_", Style::default().fg(YELLOW)),
-    ]))
-    .block(block);
+    let char_len = value.chars().count();
+    let clamped = cursor.min(char_len);
+    let before: String = value.chars().take(clamped).collect();
+    let after: String = value.chars().skip(clamped).collect();
 
+    let mut spans = vec![Span::styled(
+        format!(" {}", before),
+        Style::default().fg(TEXT),
+    )];
+    if after.is_empty() {
+        spans.push(Span::styled("_", Style::default().fg(YELLOW)));
+    } else {
+        let cursor_ch: String = after.chars().take(1).collect();
+        let rest: String = after.chars().skip(1).collect();
+        spans.push(Span::styled(
+            cursor_ch,
+            Style::default().fg(MANTLE).bg(YELLOW),
+        ));
+        if !rest.is_empty() {
+            spans.push(Span::styled(rest, Style::default().fg(TEXT)));
+        }
+    }
+
+    let paragraph = Paragraph::new(Line::from(spans)).block(block);
     frame.render_widget(paragraph, area);
 }
 
