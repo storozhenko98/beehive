@@ -11,6 +11,20 @@ export function Footer() {
             >
               Mykyta Storozhenko
             </a>
+            {" "}&middot; Contributors:{" "}
+            <a
+              href="https://github.com/brianjmeier"
+              className="text-ctp-blue hover:text-ctp-sapphire transition-colors"
+            >
+              Brian Meier
+            </a>
+            ,{" "}
+            <a
+              href="https://github.com/gupta-nakul"
+              className="text-ctp-blue hover:text-ctp-sapphire transition-colors"
+            >
+              Nakul Gupta
+            </a>
           </span>
           <div className="flex gap-5">
             <a

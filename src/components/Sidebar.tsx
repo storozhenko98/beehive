@@ -96,29 +96,42 @@ export function Sidebar({
         <div className={`sidebar-comb-list ${isDragging ? "is-dragging" : ""}`}>
           {combs.map((comb, idx) => {
             const { ref, onPointerDown, style, isDragged } = getItemProps(idx);
+            
+            // Check for any operation (new operation field or legacy cloning)
+            const hasOperation = !!comb.operation || comb.cloning;
+            const operationText = comb.operation === "cloning" || comb.cloning
+              ? "Cloning..."
+              : comb.operation === "copying"
+              ? "Copying..."
+              : comb.operation === "deleting"
+              ? "Deleting..."
+              : null;
+            const isDeleting = comb.operation === "deleting";
+            const canInteract = !hasOperation;
+            const canCopy = canInteract && !isDeleting;
 
             return (
               <div
                 key={comb.id}
                 ref={ref}
-                className={`sidebar-comb-item ${comb.id === activeCombId ? "active" : ""} ${comb.cloning ? "cloning" : ""} ${isDragged ? "dragging" : ""}`}
+                className={`sidebar-comb-item ${comb.id === activeCombId ? "active" : ""} ${hasOperation ? "has-operation" : ""} ${isDeleting ? "deleting" : ""} ${isDragged ? "dragging" : ""}`}
                 style={style}
                 onPointerDown={(e) => {
-                  if (!comb.cloning) onPointerDown(e);
+                  if (canInteract) onPointerDown(e);
                 }}
                 onClick={() => {
-                  if (!comb.cloning && !isDragging) onSelectComb(comb);
+                  if (canInteract && !isDragging) onSelectComb(comb);
                 }}
               >
                 <div className="sidebar-comb-info">
                   <span className="sidebar-comb-name">{comb.name}</span>
-                  {comb.cloning ? (
-                    <span className="sidebar-comb-cloning">Cloning...</span>
+                  {operationText ? (
+                    <span className="sidebar-comb-operation">{operationText}</span>
                   ) : (
                     <span className="sidebar-comb-branch">{comb.branch}</span>
                   )}
                 </div>
-                {!comb.cloning && (
+                {canInteract && (
                   <>
                     {confirmDeleteId === comb.id ? (
                       <div className="delete-confirm-inline" onClick={(e) => e.stopPropagation()}>
@@ -137,16 +150,18 @@ export function Sidebar({
                       </div>
                     ) : (
                       <div className="sidebar-comb-actions">
-                        <button
-                          className="sidebar-comb-copy"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onCopyComb(comb.id);
-                          }}
-                          title="Copy comb"
-                        >
-                          &#x2398;
-                        </button>
+                        {canCopy && (
+                          <button
+                            className="sidebar-comb-copy"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onCopyComb(comb.id);
+                            }}
+                            title="Copy comb"
+                          >
+                            &#x2398;
+                          </button>
+                        )}
                         <button
                           className="sidebar-comb-delete"
                           onClick={(e) => {
@@ -177,15 +192,28 @@ export function Sidebar({
 
       {/* Footer */}
       <div className="sidebar-footer">
-        <button className="sidebar-footer-btn" onClick={onManageHives}>
-          Manage Hives
-        </button>
-        <button className="sidebar-footer-btn" onClick={onSettings}>
-          Settings
-        </button>
-        <button className="sidebar-footer-btn" onClick={onHelp}>
-          Help
-        </button>
+        {(() => {
+          const activeOps = combs.filter((c) => c.operation || c.cloning).length;
+          if (activeOps > 0) {
+            return (
+              <div className="sidebar-ops-indicator">
+                {activeOps} operation{activeOps > 1 ? "s" : ""} running
+              </div>
+            );
+          }
+          return null;
+        })()}
+        <div className="sidebar-footer-buttons">
+          <button className="sidebar-footer-btn" onClick={onManageHives}>
+            Manage Hives
+          </button>
+          <button className="sidebar-footer-btn" onClick={onSettings}>
+            Settings
+          </button>
+          <button className="sidebar-footer-btn" onClick={onHelp}>
+            Help
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -188,12 +188,12 @@ fn run_app(
         }
 
         // --- Phase 2: Background checks ---
-        check_pending_clone(app);
-        check_pending_delete(app);
+        let clone_done = check_pending_clones(app);
+        let delete_done = check_pending_deletes(app);
 
-        // Spinner animation while background work is in progress
-        if app.pending_clone.is_some() || app.pending_delete.is_some() {
-            dirty = true; // force redraws for spinner animation
+        // Force redraw when operations complete or are still in progress (spinner animation)
+        if clone_done || delete_done || app.has_pending_work() {
+            dirty = true;
         }
 
         if app.update_available.is_none() {
@@ -357,19 +357,43 @@ fn process_event(
                 handle_key(app, *key, terminal)?;
             }
             Event::Paste(text) => {
-                if let AppMode::Input { value, .. } = &mut app.mode {
-                    value.push_str(text);
+                if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(*cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    value.insert_str(byte_pos, text);
+                    *cursor += text.chars().count();
                 } else if let AppMode::BranchPicker {
-                    filter, selected, ..
+                    filter,
+                    filter_cursor,
+                    selected,
+                    ..
                 } = &mut app.mode
                 {
-                    filter.push_str(text);
+                    let byte_pos = filter
+                        .char_indices()
+                        .nth(*filter_cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(filter.len());
+                    filter.insert_str(byte_pos, text);
+                    *filter_cursor += text.chars().count();
                     *selected = 0;
                 } else if let AppMode::CombFinder {
-                    filter, selected, ..
+                    filter,
+                    filter_cursor,
+                    selected,
+                    ..
                 } = &mut app.mode
                 {
-                    filter.push_str(text);
+                    let byte_pos = filter
+                        .char_indices()
+                        .nth(*filter_cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(filter.len());
+                    filter.insert_str(byte_pos, text);
+                    *filter_cursor += text.chars().count();
                     *selected = 0;
                 }
             }
@@ -379,48 +403,122 @@ fn process_event(
     Ok(())
 }
 
-fn check_pending_clone(app: &mut App) {
-    if let Some(ref slot) = app.pending_clone {
-        let mut guard = slot.lock().unwrap();
-        if let Some(result) = guard.take() {
-            drop(guard);
-            app.pending_clone = None;
-            app.activity = None;
+/// Returns true if any clone/copy operation completed this tick (needs redraw).
+fn check_pending_clones(app: &mut App) -> bool {
+    let mut any_completed = false;
+    let mut i = 0;
+    while i < app.pending_clones.len() {
+        let done = {
+            let guard = app.pending_clones[i].slot.lock().unwrap();
+            guard.is_some()
+        };
+        if done {
+            any_completed = true;
+            let pending = app.pending_clones.remove(i);
+            let result = pending.slot.lock().unwrap().take().unwrap();
+            let paused = app.should_pause_refresh();
             match result.comb {
                 Ok(comb) => {
                     if result.is_copy {
-                        // Copy: auto-switch to new comb (existing behavior)
                         app.status_message = Some(format!("Copied '{}'", result.comb_name));
-                        let id = comb.id.clone();
-                        let path = comb.path.clone();
-                        app.active_comb_id = Some(id.clone());
-                        app.refresh();
-                        app.open_terminal(&id, &path);
+                        if paused {
+                            // Update the comb in-place so the spinner stops
+                            update_comb_in_items(&mut app.items, &comb.id, &comb);
+                            app.needs_refresh = true;
+                        } else {
+                            let id = comb.id.clone();
+                            let path = comb.path.clone();
+                            app.active_comb_id = Some(id.clone());
+                            app.refresh();
+                            app.open_terminal(&id, &path);
+                        }
                     } else {
-                        // Clone: graceful — don't switch focus, user stays where they are
                         app.status_message = Some(format!("Created '{}'", result.comb_name));
-                        app.refresh();
+                        if paused {
+                            // Update the comb in-place so the spinner stops
+                            update_comb_in_items(&mut app.items, &comb.id, &comb);
+                            app.needs_refresh = true;
+                        } else {
+                            app.refresh();
+                        }
                     }
                 }
                 Err(e) => {
                     let action = if result.is_copy { "Copy" } else { "Clone" };
                     app.status_message = Some(format!("{} failed: {}", action, e));
-                    app.refresh();
+                    if paused {
+                        // Remove the failed placeholder in-place
+                        remove_comb_from_items(&mut app.items, &result.comb_name);
+                        app.needs_refresh = true;
+                    } else {
+                        app.refresh();
+                    }
                 }
+            }
+            // Don't increment i — the Vec shifted
+        } else {
+            i += 1;
+        }
+    }
+    any_completed
+}
+
+/// Update a comb entry in-place within the items list (e.g. flip cloning to false).
+fn update_comb_in_items(items: &mut [app::NavItem], comb_id: &str, fresh: &Comb) {
+    for item in items.iter_mut() {
+        if let app::NavItem::Comb { comb, .. } = item {
+            if comb.id == comb_id {
+                comb.cloning = fresh.cloning;
+                comb.branch = fresh.branch.clone();
+                break;
             }
         }
     }
 }
 
-fn check_pending_delete(app: &mut App) {
-    if let Some(ref slot) = app.pending_delete {
-        let mut guard = slot.lock().unwrap();
-        if let Some(result) = guard.take() {
-            drop(guard);
-            app.pending_delete = None;
-            app.activity = None;
-            app.deleting_comb_ids.clear();
-            app.deleting_hive_dir_names.clear();
+/// Remove a comb entry from the items list by name (for failed clones/copies).
+fn remove_comb_from_items(items: &mut Vec<app::NavItem>, comb_name: &str) {
+    items.retain(|item| {
+        !matches!(item, app::NavItem::Comb { comb, .. } if comb.name == comb_name && comb.cloning)
+    });
+}
+
+/// Returns true if any delete operation completed this tick (needs redraw).
+fn check_pending_deletes(app: &mut App) -> bool {
+    let mut any_completed = false;
+    let mut i = 0;
+    while i < app.pending_deletes.len() {
+        let done = {
+            let guard = app.pending_deletes[i].slot.lock().unwrap();
+            guard.is_some()
+        };
+        if done {
+            any_completed = true;
+            let pending = app.pending_deletes.remove(i);
+            let result = pending.slot.lock().unwrap().take().unwrap();
+
+            // Clear deleting markers for completed items
+            for name in &result.deleted_comb_names {
+                // Find the comb ID by name and remove from deleting set
+                let comb_id = app.items.iter().find_map(|item| match item {
+                    app::NavItem::Comb { comb, .. } if comb.name == *name => Some(comb.id.clone()),
+                    _ => None,
+                });
+                if let Some(id) = comb_id {
+                    app.deleting_comb_ids.remove(&id);
+                }
+            }
+            for name in &result.deleted_hive_names {
+                let dir = app.items.iter().find_map(|item| match item {
+                    app::NavItem::Hive { info, .. } if info.repo_name == *name => {
+                        Some(info.dir_name.clone())
+                    }
+                    _ => None,
+                });
+                if let Some(d) = dir {
+                    app.deleting_hive_dir_names.remove(&d);
+                }
+            }
 
             let mut parts = Vec::new();
             if result.deleted_comb_names.len() == 1 {
@@ -446,8 +544,12 @@ fn check_pending_delete(app: &mut App) {
                 ))
             };
             app.refresh();
+            // Don't increment i — the Vec shifted
+        } else {
+            i += 1;
         }
     }
+    any_completed
 }
 
 fn is_focus_toggle(key: &crossterm::event::KeyEvent) -> bool {
@@ -615,14 +717,64 @@ fn handle_input_key(
         KeyCode::Enter => {
             handle_input_submit(app, terminal)?;
         }
+        KeyCode::Left => {
+            if let AppMode::Input { cursor, .. } = &mut app.mode {
+                if *cursor > 0 {
+                    *cursor -= 1;
+                }
+            }
+        }
+        KeyCode::Right => {
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                if *cursor < value.chars().count() {
+                    *cursor += 1;
+                }
+            }
+        }
+        KeyCode::Home => {
+            if let AppMode::Input { cursor, .. } = &mut app.mode {
+                *cursor = 0;
+            }
+        }
+        KeyCode::End => {
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                *cursor = value.chars().count();
+            }
+        }
         KeyCode::Char(c) => {
-            if let AppMode::Input { value, .. } = &mut app.mode {
-                value.push(c);
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                let byte_pos = value
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(i, _)| i)
+                    .unwrap_or(value.len());
+                value.insert(byte_pos, c);
+                *cursor += 1;
             }
         }
         KeyCode::Backspace => {
-            if let AppMode::Input { value, .. } = &mut app.mode {
-                value.pop();
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                if *cursor > 0 {
+                    *cursor -= 1;
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(*cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    value.remove(byte_pos);
+                }
+            }
+        }
+        KeyCode::Delete => {
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                if *cursor < value.chars().count() {
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(*cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    value.remove(byte_pos);
+                }
             }
         }
         _ => {}
@@ -658,6 +810,7 @@ fn handle_comb_finder(
                 targets,
                 filter,
                 selected,
+                ..
             } = &mut app.mode
             {
                 let filtered_count = app::filter_comb_finder_targets(targets, filter).len();
@@ -673,6 +826,7 @@ fn handle_comb_finder(
                 targets,
                 filter,
                 selected,
+                ..
             } = &mut app.mode
             {
                 let filtered_count = app::filter_comb_finder_targets(targets, filter).len();
@@ -687,6 +841,7 @@ fn handle_comb_finder(
                 targets,
                 filter,
                 selected,
+                ..
             } = mode
             {
                 let filtered = app::filter_comb_finder_targets(&targets, &filter);
@@ -707,22 +862,61 @@ fn handle_comb_finder(
                 }
             }
         }
-        KeyCode::Char(c) => {
+        KeyCode::Left => {
+            if let AppMode::CombFinder { filter_cursor, .. } = &mut app.mode {
+                if *filter_cursor > 0 {
+                    *filter_cursor -= 1;
+                }
+            }
+        }
+        KeyCode::Right => {
             if let AppMode::CombFinder {
-                filter, selected, ..
+                filter,
+                filter_cursor,
+                ..
             } = &mut app.mode
             {
-                filter.push(c);
+                if *filter_cursor < filter.chars().count() {
+                    *filter_cursor += 1;
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::CombFinder {
+                filter,
+                filter_cursor,
+                selected,
+                ..
+            } = &mut app.mode
+            {
+                let byte_pos = filter
+                    .char_indices()
+                    .nth(*filter_cursor)
+                    .map(|(i, _)| i)
+                    .unwrap_or(filter.len());
+                filter.insert(byte_pos, c);
+                *filter_cursor += 1;
                 *selected = 0;
             }
         }
         KeyCode::Backspace => {
             if let AppMode::CombFinder {
-                filter, selected, ..
+                filter,
+                filter_cursor,
+                selected,
+                ..
             } = &mut app.mode
             {
-                filter.pop();
-                *selected = 0;
+                if *filter_cursor > 0 {
+                    *filter_cursor -= 1;
+                    let byte_pos = filter
+                        .char_indices()
+                        .nth(*filter_cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(filter.len());
+                    filter.remove(byte_pos);
+                    *selected = 0;
+                }
             }
         }
         _ => {}
@@ -814,6 +1008,7 @@ fn handle_branch_picker(
                 default_branch,
                 filter,
                 selected,
+                ..
             } = mode
             {
                 let filtered = fuzzy::fuzzy_filter_strings(&branches, &filter);
@@ -833,22 +1028,61 @@ fn handle_branch_picker(
                 start_async_clone(app, terminal, hive_dir_name, comb_name, branch)?;
             }
         }
-        KeyCode::Char(c) => {
+        KeyCode::Left => {
+            if let AppMode::BranchPicker { filter_cursor, .. } = &mut app.mode {
+                if *filter_cursor > 0 {
+                    *filter_cursor -= 1;
+                }
+            }
+        }
+        KeyCode::Right => {
             if let AppMode::BranchPicker {
-                filter, selected, ..
+                filter,
+                filter_cursor,
+                ..
             } = &mut app.mode
             {
-                filter.push(c);
+                if *filter_cursor < filter.chars().count() {
+                    *filter_cursor += 1;
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::BranchPicker {
+                filter,
+                filter_cursor,
+                selected,
+                ..
+            } = &mut app.mode
+            {
+                let byte_pos = filter
+                    .char_indices()
+                    .nth(*filter_cursor)
+                    .map(|(i, _)| i)
+                    .unwrap_or(filter.len());
+                filter.insert(byte_pos, c);
+                *filter_cursor += 1;
                 *selected = 0;
             }
         }
         KeyCode::Backspace => {
             if let AppMode::BranchPicker {
-                filter, selected, ..
+                filter,
+                filter_cursor,
+                selected,
+                ..
             } = &mut app.mode
             {
-                filter.pop();
-                *selected = 0;
+                if *filter_cursor > 0 {
+                    *filter_cursor -= 1;
+                    let byte_pos = filter
+                        .char_indices()
+                        .nth(*filter_cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(filter.len());
+                    filter.remove(byte_pos);
+                    *selected = 0;
+                }
             }
         }
         _ => {}
@@ -887,6 +1121,11 @@ fn handle_moving_comb(
                     }
                 }
             }
+            // Flush any deferred refresh from operations that completed during the move
+            if app.needs_refresh {
+                app.needs_refresh = false;
+                app.refresh();
+            }
         }
         KeyCode::Esc => {
             // Cancel: restore original item order
@@ -904,6 +1143,11 @@ fn handle_moving_comb(
                     original_selected.min(app.items.len() - 1)
                 };
                 app.status_message = Some("Move cancelled".to_string());
+            }
+            // Flush any deferred refresh from operations that completed during the move
+            if app.needs_refresh {
+                app.needs_refresh = false;
+                app.refresh();
             }
         }
         _ => {}
@@ -977,8 +1221,10 @@ fn start_async_clone(
         });
     });
 
-    app.pending_clone = Some(slot);
-    app.activity = Some(format!("Cloning '{}'", comb_name));
+    app.pending_clones.push(app::PendingClone {
+        slot,
+        activity: format!("Cloning '{}'", comb_name),
+    });
     Ok(())
 }
 
@@ -1046,8 +1292,10 @@ fn start_async_copy(
         });
     });
 
-    app.pending_clone = Some(slot);
-    app.activity = Some(format!("Copying '{}'", comb_name));
+    app.pending_clones.push(app::PendingClone {
+        slot,
+        activity: format!("Copying '{}'", comb_name),
+    });
     Ok(())
 }
 
@@ -1160,8 +1408,8 @@ fn start_async_delete(
     });
 
     app.pending_refresh = None;
-    app.pending_delete = Some(slot);
-    app.activity = Some(activity);
+    app.pending_deletes
+        .push(app::PendingDelete { slot, activity });
     app.status_message = None;
     Ok(())
 }
@@ -1211,15 +1459,15 @@ mod tests {
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
             last_term_size: (0, 0),
-            pending_clone: None,
-            pending_delete: None,
+            pending_clones: Vec::new(),
+            pending_deletes: Vec::new(),
             pending_refresh: None,
-            activity: None,
             update_available: None,
             sidebar_width: 28,
             deleting_comb_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
             keyboard_enhanced: false,
+            needs_refresh: false,
         }
     }
 
@@ -1369,6 +1617,7 @@ mod tests {
                 },
             ],
             filter: "bet".to_string(),
+            filter_cursor: 3,
             selected: 0,
         };
 
@@ -1387,6 +1636,7 @@ mod tests {
         app.mode = AppMode::Input {
             prompt: "Comb name".to_string(),
             value: String::new(),
+            cursor: 0,
             action: InputAction::AddHiveUrl,
         };
 
@@ -1409,6 +1659,7 @@ mod tests {
         app.mode = AppMode::Input {
             prompt: "Comb name".to_string(),
             value: "draft".to_string(),
+            cursor: 5,
             action: InputAction::AddHiveUrl,
         };
 
@@ -1459,6 +1710,7 @@ fn handle_input_submit(
                             branches,
                             default_branch,
                             filter: String::new(),
+                            filter_cursor: 0,
                             selected,
                         });
                     }
@@ -1473,6 +1725,7 @@ fn handle_input_submit(
                         app.enter_sidebar_mode(AppMode::Input {
                             prompt: format!("Branch [{}]", default_branch),
                             value: String::new(),
+                            cursor: 0,
                             action: InputAction::NewCombName { hive_dir_name },
                         });
                     }

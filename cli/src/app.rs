@@ -15,10 +15,22 @@ pub struct CloneResult {
     pub is_copy: bool,
 }
 
+/// A pending clone/copy operation with its own slot and description.
+pub struct PendingClone {
+    pub slot: Arc<Mutex<Option<CloneResult>>>,
+    pub activity: String,
+}
+
 pub struct DeleteResult {
     pub deleted_comb_names: Vec<String>,
     pub deleted_hive_names: Vec<String>,
     pub errors: Vec<String>,
+}
+
+/// A pending delete operation with its own slot and description.
+pub struct PendingDelete {
+    pub slot: Arc<Mutex<Option<DeleteResult>>>,
+    pub activity: String,
 }
 
 #[derive(Clone)]
@@ -119,6 +131,7 @@ pub enum AppMode {
     Input {
         prompt: String,
         value: String,
+        cursor: usize,
         action: InputAction,
     },
     Confirm {
@@ -131,6 +144,7 @@ pub enum AppMode {
         branches: Vec<String>,
         default_branch: String,
         filter: String,
+        filter_cursor: usize,
         selected: usize,
     },
     /// Reordering a comb within its hive. Up/Down to move, m/Enter to confirm, Esc to cancel.
@@ -144,6 +158,7 @@ pub enum AppMode {
     CombFinder {
         targets: Vec<CombFinderTarget>,
         filter: String,
+        filter_cursor: usize,
         selected: usize,
     },
     DeleteCombSelection {
@@ -199,11 +214,11 @@ pub struct App {
     pub focus: Focus,
     pub terminals: HashMap<String, EmbeddedTerminal>,
     pub last_term_size: (u16, u16),
-    pub pending_clone: Option<Arc<Mutex<Option<CloneResult>>>>,
-    pub pending_delete: Option<Arc<Mutex<Option<DeleteResult>>>>,
+    /// Multiple concurrent clone/copy operations
+    pub pending_clones: Vec<PendingClone>,
+    /// Multiple concurrent delete operations
+    pub pending_deletes: Vec<PendingDelete>,
     pub pending_refresh: Option<Arc<Mutex<Option<RefreshResult>>>>,
-    /// Persistent activity message shown in header (e.g. "Cloning 'foo'...")
-    pub activity: Option<String>,
     pub update_available: Option<String>,
     pub sidebar_width: u16,
     pub deleting_comb_ids: HashSet<String>,
@@ -211,6 +226,8 @@ pub struct App {
     /// Whether the outer terminal supports the kitty keyboard enhancement protocol.
     /// When true, crossterm reports SUPER/META modifiers and key event kinds (press/repeat/release).
     pub keyboard_enhanced: bool,
+    /// Set when a completed operation wanted to refresh but was deferred (e.g. during move mode).
+    pub needs_refresh: bool,
 }
 
 impl App {
@@ -258,19 +275,31 @@ impl App {
         }
     }
 
-    pub fn has_cloning_comb(&self) -> bool {
-        self.items.iter().any(|item| match item {
-            NavItem::Comb { comb, .. } => comb.cloning,
-            _ => false,
-        })
+    pub fn has_pending_work(&self) -> bool {
+        !self.pending_clones.is_empty() || !self.pending_deletes.is_empty()
     }
 
-    pub fn has_pending_work(&self) -> bool {
-        self.pending_clone.is_some() || self.pending_delete.is_some()
+    /// Derive the activity summary from all pending operations.
+    pub fn activity_summary(&self) -> Option<String> {
+        let total = self.pending_clones.len() + self.pending_deletes.len();
+        if total == 0 {
+            return None;
+        }
+        if total == 1 {
+            // Show the single activity message
+            if let Some(pc) = self.pending_clones.first() {
+                return Some(pc.activity.clone());
+            }
+            if let Some(pd) = self.pending_deletes.first() {
+                return Some(pd.activity.clone());
+            }
+        }
+        // Multiple operations: show count
+        Some(format!("{} operations running", total))
     }
 
     pub fn should_pause_refresh(&self) -> bool {
-        self.pending_delete.is_some()
+        !self.pending_deletes.is_empty()
             || matches!(
                 self.mode,
                 AppMode::MovingComb { .. } | AppMode::DeleteCombSelection { .. }
@@ -449,15 +478,12 @@ impl App {
         self.enter_sidebar_mode(AppMode::CombFinder {
             targets,
             filter: String::new(),
+            filter_cursor: 0,
             selected: 0,
         });
     }
 
     pub fn start_delete_mode(&mut self) {
-        if self.has_pending_work() || self.has_cloning_comb() {
-            self.status_message = Some("Wait for the current operation to finish".to_string());
-            return;
-        }
         if self.items.is_empty() {
             return;
         }
@@ -614,15 +640,15 @@ impl App {
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
             last_term_size: (0, 0),
-            pending_clone: None,
-            pending_delete: None,
+            pending_clones: Vec::new(),
+            pending_deletes: Vec::new(),
             pending_refresh: None,
-            activity: None,
             update_available: None,
             sidebar_width: config.sidebar_width,
             deleting_comb_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
             keyboard_enhanced,
+            needs_refresh: false,
         };
         app.load_all(true)?;
         Ok(app)
@@ -863,14 +889,11 @@ impl App {
     }
 
     pub fn start_new_comb(&mut self) {
-        if self.has_pending_work() {
-            self.status_message = Some("Wait for current operation to finish".to_string());
-            return;
-        }
         if let Some(dir_name) = self.selected_hive_dir() {
             self.enter_sidebar_mode(AppMode::Input {
                 prompt: "Comb name".to_string(),
                 value: String::new(),
+                cursor: 0,
                 action: InputAction::NewCombName {
                     hive_dir_name: dir_name,
                 },
@@ -881,10 +904,6 @@ impl App {
     }
 
     pub fn start_copy_comb(&mut self) {
-        if self.has_pending_work() {
-            self.status_message = Some("Wait for current operation to finish".to_string());
-            return;
-        }
         if self.items.is_empty() {
             return;
         }
@@ -901,6 +920,7 @@ impl App {
             self.enter_sidebar_mode(AppMode::Input {
                 prompt: format!("Copy '{}' as", comb.name),
                 value: String::new(),
+                cursor: 0,
                 action: InputAction::CopyCombName {
                     hive_dir_name: hive_dir_name.clone(),
                     source_comb_name: comb.name.clone(),
@@ -913,10 +933,6 @@ impl App {
     }
 
     pub fn start_move_comb(&mut self) {
-        if self.has_pending_work() || self.has_cloning_comb() {
-            self.status_message = Some("Wait for current operation to finish".to_string());
-            return;
-        }
         if self.items.is_empty() {
             return;
         }
@@ -1023,15 +1039,12 @@ impl App {
         self.enter_sidebar_mode(AppMode::Input {
             prompt: "Repository (owner/repo or URL)".to_string(),
             value: String::new(),
+            cursor: 0,
             action: InputAction::AddHiveUrl,
         });
     }
 
     pub fn start_delete(&mut self) {
-        if self.has_pending_work() {
-            self.status_message = Some("Wait for current operation to finish".to_string());
-            return;
-        }
         if self.items.is_empty() {
             return;
         }
@@ -1132,15 +1145,15 @@ mod tests {
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
             last_term_size: (0, 0),
-            pending_clone: None,
-            pending_delete: None,
+            pending_clones: Vec::new(),
+            pending_deletes: Vec::new(),
             pending_refresh: None,
-            activity: None,
             update_available: None,
             sidebar_width: 28,
             deleting_comb_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
             keyboard_enhanced: false,
+            needs_refresh: false,
         }
     }
 

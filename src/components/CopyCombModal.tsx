@@ -5,7 +5,6 @@ interface Props {
   existingNames: string[];
   onCopy: (newName: string) => void;
   onClose: () => void;
-  loading: boolean;
   error: string;
 }
 
@@ -18,11 +17,11 @@ function validateName(name: string, existingNames: string[]): string {
   return "";
 }
 
-export function CopyCombModal({ sourceCombName, existingNames, onCopy, onClose, loading, error }: Props) {
+export function CopyCombModal({ sourceCombName, existingNames, onCopy, onClose, error }: Props) {
   const [name, setName] = useState("");
 
   const validationError = validateName(name, existingNames);
-  const canSubmit = name.length > 0 && !validationError && !loading;
+  const canSubmit = name.length > 0 && !validationError;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -59,7 +58,7 @@ export function CopyCombModal({ sourceCombName, existingNames, onCopy, onClose, 
         {error && <div className="error-box">{error}</div>}
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn btn-primary" onClick={() => onCopy(name)} disabled={!canSubmit}>
-            {loading ? "Copying..." : "Copy Comb"}
+            Copy Comb
           </button>
           <button className="btn btn-secondary" onClick={onClose}>
             Cancel

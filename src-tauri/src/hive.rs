@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use tauri::{AppHandle, Emitter};
 
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -52,7 +53,29 @@ pub struct Comb {
     #[serde(default)]
     pub panes: Vec<PaneConfig>,
     #[serde(default)]
-    pub cloning: bool,
+    pub cloning: bool, // deprecated, use operation instead
+    #[serde(default)]
+    pub operation: Option<String>, // "cloning" | "copying" | "deleting"
+}
+
+// Event payloads for operation completion
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CombOperationResult {
+    pub hive_dir_name: String,
+    pub comb_id: String,
+    pub op_type: String, // "cloning" | "copying" | "deleting"
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveOperationResult {
+    pub hive_dir_name: String,
+    pub op_type: String, // "deleting"
+    pub success: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -447,6 +470,71 @@ pub async fn list_hives(beehive_dir: String) -> Result<Vec<HiveInfo>, String> {
     Ok(hives)
 }
 
+/// Phase 1: Check if hive can be deleted (no active comb operations)
+#[tauri::command]
+pub async fn delete_hive_start(
+    beehive_dir: String,
+    dir_name: String,
+) -> Result<(), String> {
+    let state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    // Check if any combs have active operations
+    let active_ops: Vec<&str> = state.combs
+        .iter()
+        .filter_map(|c| c.operation.as_deref())
+        .collect();
+
+    if !active_ops.is_empty() {
+        return Err("Cannot delete hive while comb operations are in progress".to_string());
+    }
+
+    Ok(())
+}
+
+/// Phase 2: Execute the actual hive deletion (runs in background, emits event)
+#[tauri::command]
+pub async fn delete_hive_run(
+    app: AppHandle,
+    beehive_dir: String,
+    dir_name: String,
+) -> Result<(), String> {
+    let beehive_dir_clone = beehive_dir.clone();
+    let dir_name_clone = dir_name.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let hive_dir = Path::new(&beehive_dir_clone).join(&dir_name_clone);
+        
+        let delete_result = if hive_dir.exists() {
+            fs::remove_dir_all(&hive_dir)
+                .map_err(|e| format!("Failed to delete: {}", e))
+        } else {
+            Ok(())
+        };
+
+        match delete_result {
+            Ok(()) => {
+                let _ = app.emit("hive-operation-done", HiveOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    op_type: "deleting".to_string(),
+                    success: true,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                let _ = app.emit("hive-operation-done", HiveOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    op_type: "deleting".to_string(),
+                    success: false,
+                    error: Some(e),
+                });
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Legacy single-phase delete (kept for backward compatibility)
 #[tauri::command]
 pub async fn delete_hive(beehive_dir: String, dir_name: String) -> Result<(), String> {
     let hive_dir = Path::new(&beehive_dir).join(&dir_name);
@@ -503,7 +591,8 @@ pub async fn create_comb_start(
         path: comb_dir.to_string_lossy().to_string(),
         created_at: chrono_now(),
         panes: vec![],
-        cloning: true,
+        cloning: true, // for backward compat
+        operation: Some("cloning".to_string()),
     };
 
     state.combs.push(comb.clone());
@@ -514,6 +603,7 @@ pub async fn create_comb_start(
 
 #[tauri::command]
 pub async fn create_comb_clone(
+    app: AppHandle,
     beehive_dir: String,
     dir_name: String,
     comb_id: String,
@@ -527,61 +617,120 @@ pub async fn create_comb_clone(
         .ok_or_else(|| format!("Comb '{}' not found", comb_id))?
         .clone();
 
-    let comb_dir = Path::new(&comb.path);
+    let repo_url = state.info.repo_url.clone();
+    let dir_name_clone = dir_name.clone();
+    let beehive_dir_clone = beehive_dir.clone();
+    let comb_id_clone = comb_id.clone();
 
-    // Clone the repo into the comb directory
-    let clone_output = cmd_with_path("git")
-        .args(["clone", &state.info.repo_url, comb_dir.to_str().unwrap()])
-        .output()
-        .map_err(|e| format!("Clone failed: {}", e))?;
+    // Spawn blocking task for git operations
+    tokio::task::spawn_blocking(move || {
+        let comb_dir = Path::new(&comb.path);
 
-    if !clone_output.status.success() {
-        // Clean up: remove comb from state and directory
-        let mut state = load_hive_state(&beehive_dir, &dir_name)?;
-        state.combs.retain(|c| c.id != comb_id);
-        let _ = save_hive_state(&beehive_dir, &dir_name, &state);
-        let _ = fs::remove_dir_all(comb_dir);
-        return Err(format!(
-            "Git clone failed: {}",
-            String::from_utf8_lossy(&clone_output.stderr)
-        ));
-    }
+        // Clone the repo into the comb directory
+        let clone_output = cmd_with_path("git")
+            .args(["clone", &repo_url, comb_dir.to_str().unwrap()])
+            .output();
 
-    // Checkout the branch
-    let checkout_output = cmd_with_path("git")
-        .args(["checkout", &comb.branch])
-        .current_dir(comb_dir)
-        .output()
-        .map_err(|e| format!("Checkout failed: {}", e))?;
+        let clone_result = match clone_output {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => Err(format!(
+                "Git clone failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )),
+            Err(e) => Err(format!("Clone failed: {}", e)),
+        };
 
-    if !checkout_output.status.success() {
-        // Try creating the branch if it doesn't exist remotely
-        let checkout_new = cmd_with_path("git")
-            .args(["checkout", "-b", &comb.branch])
-            .current_dir(comb_dir)
-            .output()
-            .map_err(|e| format!("Checkout -b failed: {}", e))?;
-
-        if !checkout_new.status.success() {
+        if let Err(error) = clone_result {
             // Clean up: remove comb from state and directory
-            let mut state = load_hive_state(&beehive_dir, &dir_name)?;
-            state.combs.retain(|c| c.id != comb_id);
-            let _ = save_hive_state(&beehive_dir, &dir_name, &state);
+            if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                state.combs.retain(|c| c.id != comb_id_clone);
+                let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+            }
             let _ = fs::remove_dir_all(comb_dir);
-            return Err(format!(
-                "Failed to checkout branch '{}': {}",
-                comb.branch,
-                String::from_utf8_lossy(&checkout_new.stderr)
-            ));
+            let _ = app.emit("comb-operation-done", CombOperationResult {
+                hive_dir_name: dir_name_clone,
+                comb_id: comb_id_clone,
+                op_type: "cloning".to_string(),
+                success: false,
+                error: Some(error),
+            });
+            return;
         }
-    }
 
-    // Success: mark cloning = false
-    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
-    if let Some(c) = state.combs.iter_mut().find(|c| c.id == comb_id) {
-        c.cloning = false;
-    }
-    save_hive_state(&beehive_dir, &dir_name, &state)?;
+        // Checkout the branch
+        let checkout_output = cmd_with_path("git")
+            .args(["checkout", &comb.branch])
+            .current_dir(comb_dir)
+            .output();
+
+        let checkout_ok = match checkout_output {
+            Ok(output) if output.status.success() => true,
+            _ => {
+                // Try creating the branch if it doesn't exist remotely
+                let checkout_new = cmd_with_path("git")
+                    .args(["checkout", "-b", &comb.branch])
+                    .current_dir(comb_dir)
+                    .output();
+
+                match checkout_new {
+                    Ok(output) if output.status.success() => true,
+                    Ok(output) => {
+                        // Clean up: remove comb from state and directory
+                        if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                            state.combs.retain(|c| c.id != comb_id_clone);
+                            let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+                        }
+                        let _ = fs::remove_dir_all(comb_dir);
+                        let _ = app.emit("comb-operation-done", CombOperationResult {
+                            hive_dir_name: dir_name_clone,
+                            comb_id: comb_id_clone,
+                            op_type: "cloning".to_string(),
+                            success: false,
+                            error: Some(format!(
+                                "Failed to checkout branch '{}': {}",
+                                comb.branch,
+                                String::from_utf8_lossy(&output.stderr)
+                            )),
+                        });
+                        return;
+                    }
+                    Err(e) => {
+                        if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                            state.combs.retain(|c| c.id != comb_id_clone);
+                            let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+                        }
+                        let _ = fs::remove_dir_all(comb_dir);
+                        let _ = app.emit("comb-operation-done", CombOperationResult {
+                            hive_dir_name: dir_name_clone,
+                            comb_id: comb_id_clone,
+                            op_type: "cloning".to_string(),
+                            success: false,
+                            error: Some(format!("Checkout -b failed: {}", e)),
+                        });
+                        return;
+                    }
+                }
+            }
+        };
+
+        if checkout_ok {
+            // Success: mark operation complete
+            if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                if let Some(c) = state.combs.iter_mut().find(|c| c.id == comb_id_clone) {
+                    c.cloning = false;
+                    c.operation = None;
+                }
+                let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+            }
+            let _ = app.emit("comb-operation-done", CombOperationResult {
+                hive_dir_name: dir_name_clone,
+                comb_id: comb_id_clone,
+                op_type: "cloning".to_string(),
+                success: true,
+                error: None,
+            });
+        }
+    });
 
     Ok(())
 }
@@ -621,6 +770,97 @@ pub async fn list_combs(beehive_dir: String, dir_name: String) -> Result<Vec<Com
     Ok(state.combs)
 }
 
+/// Phase 1: Mark comb as deleting (returns immediately)
+#[tauri::command]
+pub async fn delete_comb_start(
+    beehive_dir: String,
+    dir_name: String,
+    comb_id: String,
+) -> Result<(), String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    if let Some(comb) = state.combs.iter_mut().find(|c| c.id == comb_id) {
+        // Don't allow deleting if already has an operation in progress
+        if comb.operation.is_some() {
+            return Err("Comb already has an operation in progress".to_string());
+        }
+        comb.operation = Some("deleting".to_string());
+        save_hive_state(&beehive_dir, &dir_name, &state)?;
+    }
+
+    Ok(())
+}
+
+/// Phase 2: Execute the actual deletion (runs in background, emits event)
+#[tauri::command]
+pub async fn delete_comb_run(
+    app: AppHandle,
+    beehive_dir: String,
+    dir_name: String,
+    comb_id: String,
+) -> Result<(), String> {
+    let state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    let comb = state
+        .combs
+        .iter()
+        .find(|c| c.id == comb_id)
+        .ok_or_else(|| format!("Comb '{}' not found", comb_id))?
+        .clone();
+
+    let comb_path = comb.path.clone();
+    let dir_name_clone = dir_name.clone();
+    let beehive_dir_clone = beehive_dir.clone();
+    let comb_id_clone = comb_id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let path = Path::new(&comb_path);
+        
+        let delete_result = if path.exists() {
+            fs::remove_dir_all(path)
+                .map_err(|e| format!("Failed to delete comb directory: {}", e))
+        } else {
+            Ok(())
+        };
+
+        match delete_result {
+            Ok(()) => {
+                // Success: remove comb from state
+                if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                    state.combs.retain(|c| c.id != comb_id_clone);
+                    let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+                }
+                let _ = app.emit("comb-operation-done", CombOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    comb_id: comb_id_clone,
+                    op_type: "deleting".to_string(),
+                    success: true,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                // Failed: revert operation flag
+                if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                    if let Some(c) = state.combs.iter_mut().find(|c| c.id == comb_id_clone) {
+                        c.operation = None;
+                    }
+                    let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+                }
+                let _ = app.emit("comb-operation-done", CombOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    comb_id: comb_id_clone,
+                    op_type: "deleting".to_string(),
+                    success: false,
+                    error: Some(e),
+                });
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Legacy single-phase delete (kept for backward compatibility)
 #[tauri::command]
 pub async fn delete_comb(
     beehive_dir: String,
@@ -724,6 +964,140 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Phase 1: Create comb entry for copying (returns immediately)
+#[tauri::command]
+pub async fn copy_comb_start(
+    beehive_dir: String,
+    dir_name: String,
+    source_comb_id: String,
+    new_name: String,
+) -> Result<Comb, String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    let source = state
+        .combs
+        .iter()
+        .find(|c| c.id == source_comb_id)
+        .ok_or_else(|| format!("Source comb '{}' not found", source_comb_id))?
+        .clone();
+
+    // Don't allow copying a comb that's being deleted
+    if source.operation.as_deref() == Some("deleting") {
+        return Err("Cannot copy a comb that is being deleted".to_string());
+    }
+
+    validate_comb_name(&new_name, &state.combs)?;
+
+    let hive_dir = Path::new(&beehive_dir).join(&dir_name);
+    let new_dir = hive_dir.join(&new_name);
+
+    let comb = Comb {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: new_name.clone(),
+        branch: source.branch.clone(),
+        path: new_dir.to_string_lossy().to_string(),
+        created_at: chrono_now(),
+        panes: vec![],
+        cloning: false,
+        operation: Some("copying".to_string()),
+    };
+
+    state.combs.push(comb.clone());
+    save_hive_state(&beehive_dir, &dir_name, &state)?;
+
+    Ok(comb)
+}
+
+/// Phase 2: Execute the actual copy (runs in background, emits event)
+#[tauri::command]
+pub async fn copy_comb_run(
+    app: AppHandle,
+    beehive_dir: String,
+    dir_name: String,
+    comb_id: String,
+    source_comb_id: String,
+) -> Result<(), String> {
+    let state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    let source = state
+        .combs
+        .iter()
+        .find(|c| c.id == source_comb_id)
+        .ok_or_else(|| format!("Source comb '{}' not found", source_comb_id))?
+        .clone();
+
+    let new_comb = state
+        .combs
+        .iter()
+        .find(|c| c.id == comb_id)
+        .ok_or_else(|| format!("New comb '{}' not found", comb_id))?
+        .clone();
+
+    let source_path = source.path.clone();
+    let new_path = new_comb.path.clone();
+    let dir_name_clone = dir_name.clone();
+    let beehive_dir_clone = beehive_dir.clone();
+    let comb_id_clone = comb_id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let source_dir = Path::new(&source_path);
+        let new_dir = Path::new(&new_path);
+
+        if !source_dir.exists() {
+            // Clean up: remove comb from state
+            if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                state.combs.retain(|c| c.id != comb_id_clone);
+                let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+            }
+            let _ = app.emit("comb-operation-done", CombOperationResult {
+                hive_dir_name: dir_name_clone,
+                comb_id: comb_id_clone,
+                op_type: "copying".to_string(),
+                success: false,
+                error: Some(format!("Source comb directory does not exist: {}", source_path)),
+            });
+            return;
+        }
+
+        match copy_dir_recursive(source_dir, new_dir) {
+            Ok(()) => {
+                // Success: mark operation complete
+                if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                    if let Some(c) = state.combs.iter_mut().find(|c| c.id == comb_id_clone) {
+                        c.operation = None;
+                    }
+                    let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+                }
+                let _ = app.emit("comb-operation-done", CombOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    comb_id: comb_id_clone,
+                    op_type: "copying".to_string(),
+                    success: true,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                // Clean up: remove comb from state and partial directory
+                if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                    state.combs.retain(|c| c.id != comb_id_clone);
+                    let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
+                }
+                let _ = fs::remove_dir_all(new_dir);
+                let _ = app.emit("comb-operation-done", CombOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    comb_id: comb_id_clone,
+                    op_type: "copying".to_string(),
+                    success: false,
+                    error: Some(e),
+                });
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Legacy single-phase copy (kept for backward compatibility, now just calls the two-phase)
 #[tauri::command]
 pub async fn copy_comb(
     beehive_dir: String,
@@ -760,6 +1134,7 @@ pub async fn copy_comb(
         created_at: chrono_now(),
         panes: vec![],
         cloning: false,
+        operation: None,
     };
 
     state.combs.push(comb.clone());

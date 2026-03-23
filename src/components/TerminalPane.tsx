@@ -290,6 +290,8 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
   useEffect(() => {
     if (isVisible && shouldFocus && terminalRef.current) {
       requestAnimationFrame(() => {
+        // Don't steal focus from modal overlays (e.g. NewCombModal input fields)
+        if (document.querySelector('.modal-overlay')) return;
         terminalRef.current?.focus();
       });
     }

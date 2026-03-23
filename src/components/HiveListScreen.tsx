@@ -9,9 +9,11 @@ interface Props {
   onHelp: () => void;
   onBack?: () => void;
   backLabel?: string;
+  hivesDeleting?: Set<string>;
+  onDeleteHive?: (dirName: string) => void;
 }
 
-export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onHelp, onBack, backLabel }: Props) {
+export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onHelp, onBack, backLabel, hivesDeleting, onDeleteHive }: Props) {
   const [hives, setHives] = useState<HiveInfo[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
@@ -62,6 +64,14 @@ export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onHelp, o
 
   const executeDelete = useCallback(async (dirName: string) => {
     setConfirmDeleteDir(null);
+    
+    // Use async deletion if handler provided
+    if (onDeleteHive) {
+      onDeleteHive(dirName);
+      return;
+    }
+    
+    // Fallback to synchronous deletion
     try {
       await invoke("delete_hive", { beehiveDir, dirName });
       await loadHives();
@@ -69,7 +79,7 @@ export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onHelp, o
       console.error("Failed to delete hive:", e);
       setError(`Delete failed: ${e}`);
     }
-  }, [beehiveDir]);
+  }, [beehiveDir, onDeleteHive]);
 
   return (
     <div className="screen-center">
@@ -142,48 +152,55 @@ export function HiveListScreen({ beehiveDir, onSelectHive, onSettings, onHelp, o
         )}
 
         <div className="hive-list">
-          {hives.map((hive) => (
-            <div
-              key={hive.dirName}
-              className="hive-item"
-              onClick={() => onSelectHive(hive)}
-            >
-              <div className="hive-item-info">
-                <span className="hive-name">{hive.repoName}</span>
-                <span className="hive-owner">{hive.owner}/{hive.repoName}</span>
-                {hive.description && (
-                  <span className="hive-desc">{hive.description}</span>
+          {hives.map((hive) => {
+            const isDeleting = hivesDeleting?.has(hive.dirName);
+            return (
+              <div
+                key={hive.dirName}
+                className={`hive-item ${isDeleting ? "hive-item-deleting" : ""}`}
+                onClick={() => !isDeleting && onSelectHive(hive)}
+                style={isDeleting ? { opacity: 0.5, pointerEvents: "none" } : undefined}
+              >
+                <div className="hive-item-info">
+                  <span className="hive-name">{hive.repoName}</span>
+                  <span className="hive-owner">{hive.owner}/{hive.repoName}</span>
+                  {hive.description && (
+                    <span className="hive-desc">{hive.description}</span>
+                  )}
+                  {isDeleting && (
+                    <span className="hive-status">Deleting...</span>
+                  )}
+                </div>
+                {isDeleting ? null : confirmDeleteDir === hive.dirName ? (
+                  <div className="delete-confirm-inline" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      className="btn-sm btn-danger"
+                      onClick={() => executeDelete(hive.dirName)}
+                    >
+                      Are you sure?
+                    </button>
+                    <button
+                      className="btn-sm"
+                      onClick={() => setConfirmDeleteDir(null)}
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="btn-icon danger"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDeleteDir(hive.dirName);
+                    }}
+                    title="Delete hive"
+                  >
+                    X
+                  </button>
                 )}
               </div>
-              {confirmDeleteDir === hive.dirName ? (
-                <div className="delete-confirm-inline" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="btn-sm btn-danger"
-                    onClick={() => executeDelete(hive.dirName)}
-                  >
-                    Are you sure?
-                  </button>
-                  <button
-                    className="btn-sm"
-                    onClick={() => setConfirmDeleteDir(null)}
-                  >
-                    No
-                  </button>
-                </div>
-              ) : (
-                <button
-                  className="btn-icon danger"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setConfirmDeleteDir(hive.dirName);
-                  }}
-                  title="Delete hive"
-                >
-                  X
-                </button>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
