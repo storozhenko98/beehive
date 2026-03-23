@@ -36,7 +36,9 @@
     "macOS": {
       "signingIdentity": "Developer ID Application: Mykyta Storozhenko (QB9BZ77543)",
       "hardenedRuntime": true,
-      "minimumSystemVersion": "10.13"
+      "minimumSystemVersion": "10.13",
+      "entitlements": "entitlements.plist",
+      "infoPlist": "Info.plist"
     }
   },
   "plugins": {
