@@ -6,6 +6,14 @@ const REPO: &str = "storozhenko98/beehive";
 const INSTALL_CMD: &str =
     "curl -fsSL https://raw.githubusercontent.com/storozhenko98/beehive/main/install.sh | bash";
 
+fn asset_name() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("beehive-tui-darwin-arm64"),
+        ("linux", "x86_64") => Some("beehive-tui-linux-x64"),
+        _ => None,
+    }
+}
+
 /// Check GitHub for a newer release. Returns `Some(version)` if an update is available.
 pub fn check_for_update() -> Option<String> {
     let output = run_cmd(
@@ -33,7 +41,12 @@ pub fn check_for_update() -> Option<String> {
 /// or Err with a user-friendly message (including the manual install command).
 pub fn self_update(version: &str) -> Result<(), String> {
     let tag = format!("v{}", version);
-    let asset = "beehive-tui-darwin-arm64";
+    let asset = asset_name().ok_or_else(|| {
+        format!(
+            "Auto-update is not available on this platform yet. Update manually:\n  {}",
+            INSTALL_CMD
+        )
+    })?;
     let url = format!(
         "https://github.com/{}/releases/download/{}/{}",
         REPO, tag, asset

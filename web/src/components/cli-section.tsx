@@ -15,9 +15,10 @@ export function CliSection() {
         <h3 className="text-xl font-bold mb-2">Beehive TUI</h3>
         <p className="text-sm text-ctp-subtext0 leading-relaxed mb-5">
           A terminal-native interface with the same workspace management,
-          embedded terminals, and shared config as the desktop app. One install
-          command, no dependencies beyond git and gh. You&apos;ll be asked to
-          choose <code className="font-mono text-ctp-text">bh</code> or{" "}
+          embedded terminals, and shared config as the desktop app. Supported
+          on macOS and Linux x64. Install with one command, or grab the latest
+          binary from Releases. You&apos;ll be asked to choose{" "}
+          <code className="font-mono text-ctp-text">bh</code> or{" "}
           <code className="font-mono text-ctp-text">beehive</code> as your
           command name.
         </p>
@@ -27,6 +28,15 @@ export function CliSection() {
           </code>
         </div>
         <CopyButton text={INSTALL_CMD} />
+        <p className="mt-3 text-[13px] text-ctp-overlay0">
+          Linux x64 release binary:{" "}
+          <a
+            href="https://github.com/storozhenko98/beehive/releases/latest"
+            className="text-ctp-blue hover:text-ctp-sapphire underline underline-offset-4"
+          >
+            download from Releases
+          </a>
+        </p>
         <div className="flex gap-6 mt-6 flex-wrap">
           <div className="flex-1 min-w-[160px] text-[13px] text-ctp-subtext0">
             <strong className="text-ctp-text block mb-0.5 text-[13px]">

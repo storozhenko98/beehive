@@ -40,6 +40,12 @@ export function Hero() {
           Download for macOS
         </a>
         <a
+          href="https://github.com/storozhenko98/beehive/releases/latest"
+          className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl text-[15px] font-semibold bg-ctp-surface0/70 text-ctp-text border border-ctp-surface0 hover:bg-ctp-surface0 hover:border-ctp-surface1 hover:-translate-y-px transition-all"
+        >
+          Download TUI for Linux
+        </a>
+        <a
           href="https://github.com/storozhenko98/beehive"
           className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl text-[15px] font-semibold bg-ctp-surface0/50 text-ctp-text border border-ctp-surface0 hover:bg-ctp-surface0 hover:border-ctp-surface1 hover:-translate-y-px transition-all"
         >
@@ -61,9 +67,9 @@ export function Hero() {
 
       {/* Meta info */}
       <p className="text-[13px] text-ctp-overlay0">
-        <span>Apple Silicon</span>
+        <span>GUI on macOS</span>
         <span className="before:content-['·'] before:mx-2 before:text-ctp-surface1">
-          Signed &amp; Notarized
+          TUI on macOS + Linux x64
         </span>
         <span className="before:content-['·'] before:mx-2 before:text-ctp-surface1">
           GUI + TUI share config

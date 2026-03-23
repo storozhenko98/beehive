@@ -14,13 +14,20 @@ Download the latest `.dmg` from [Releases](https://github.com/storozhenko98/beeh
 
 ### TUI
 
-One command, no dependencies beyond `git` and `gh`:
+macOS and Linux `x86_64` are supported for the TUI.
+
+Install directly:
 
 ```bash
 curl -fsSL beehiveapp.dev/install.sh | bash
 ```
 
 You'll be asked to choose `bh` or `beehive` as your command name. Auto-updates on startup.
+
+Or download the latest standalone TUI binary from [Releases](https://github.com/storozhenko98/beehive/releases/latest):
+
+- macOS: `beehive-tui-darwin-arm64`
+- Linux x64: `beehive-tui-linux-x64`
 
 ## Features
 
@@ -62,7 +69,7 @@ You'll be asked to choose `bh` or `beehive` as your command name. Auto-updates o
 gh auth login   # Required — Beehive uses gh for repo operations
 ```
 
-> **Note:** macOS only for now. Linux and Windows support is planned — contributions welcome.
+> **Note:** The desktop GUI is macOS-only for now. The standalone TUI supports macOS (Apple Silicon) and Linux x64. Windows support is not available yet.
 
 ## Building from Source
 
@@ -155,7 +162,7 @@ The GUI and TUI share the same config and data — you can use both interchangea
 |----------|-----|-----|
 | **macOS** (Apple Silicon) | Signed & notarized | Supported |
 | **macOS** (Intel) | Should work (untested) | Should work (untested) |
-| **Linux** | Not yet | Not yet |
+| **Linux** | Not yet | Supported (`x86_64` glibc) |
 | **Windows** | Not yet | Not yet |
 
 ## Contributing
