@@ -1,5 +1,7 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::fs;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -19,6 +21,53 @@ fn detect_focus_reporting(data: &[u8], flag: &AtomicBool) {
             flag.store(false, Ordering::SeqCst);
         }
     }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn resolve_login_shell_with_candidates(shell_env: Option<&str>, fallbacks: &[&str]) -> String {
+    if let Some(shell) = shell_env.map(str::trim).filter(|shell| !shell.is_empty()) {
+        if is_executable_file(Path::new(shell)) {
+            return shell.to_string();
+        }
+    }
+
+    for fallback in fallbacks {
+        if is_executable_file(Path::new(fallback)) {
+            return (*fallback).to_string();
+        }
+    }
+
+    shell_env
+        .map(str::trim)
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or("/bin/sh")
+        .to_string()
+}
+
+fn resolve_login_shell() -> String {
+    let shell_env = std::env::var("SHELL").ok();
+    resolve_login_shell_with_candidates(shell_env.as_deref(), &["/bin/bash", "/bin/sh"])
 }
 
 pub struct EmbeddedTerminal {
@@ -51,7 +100,7 @@ impl EmbeddedTerminal {
             })
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let shell = resolve_login_shell();
         let mut cmd = CommandBuilder::new(&shell);
         cmd.arg("-l");
         cmd.cwd(cwd);
@@ -849,6 +898,8 @@ fn set_clipboard(text: &[u8]) {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use std::fs;
+    use std::path::PathBuf;
 
     /// Helper: construct a key event with given code + modifiers
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
@@ -858,6 +909,61 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::empty(),
         }
+    }
+
+    fn write_temp_shell(name: &str, executable: bool) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "beehive-terminal-test-{}-{}-{}",
+            std::process::id(),
+            name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if executable { 0o755 } else { 0o644 };
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+
+        path
+    }
+
+    #[test]
+    fn test_resolve_login_shell_prefers_valid_shell_env() {
+        let shell = write_temp_shell("preferred", true);
+        let resolved =
+            resolve_login_shell_with_candidates(Some(shell.to_str().unwrap()), &["/does/not/exist"]);
+        assert_eq!(resolved, shell.to_string_lossy());
+        fs::remove_file(shell).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_login_shell_falls_back_when_shell_env_invalid() {
+        let fallback = write_temp_shell("fallback", true);
+        let resolved = resolve_login_shell_with_candidates(
+            Some("/does/not/exist"),
+            &[fallback.to_str().unwrap()],
+        );
+        assert_eq!(resolved, fallback.to_string_lossy());
+        fs::remove_file(fallback).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_login_shell_skips_non_executable_shell_env() {
+        let shell = write_temp_shell("nonexec", false);
+        let fallback = write_temp_shell("fallback2", true);
+        let resolved = resolve_login_shell_with_candidates(
+            Some(shell.to_str().unwrap()),
+            &[fallback.to_str().unwrap()],
+        );
+        assert_eq!(resolved, fallback.to_string_lossy());
+        fs::remove_file(shell).unwrap();
+        fs::remove_file(fallback).unwrap();
     }
 
     // --- xterm_modifier tests ---

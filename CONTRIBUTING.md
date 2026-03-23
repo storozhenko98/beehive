@@ -51,6 +51,35 @@ npx tsc --noEmit
 source "$HOME/.cargo/env" && cd src-tauri && cargo check
 ```
 
+## Experimental Linux TUI Validation
+
+The standalone TUI can be validated on Linux from macOS with Docker before testing on a real Linux host.
+
+```bash
+# Build the Linux test image and run a type-check
+./scripts/tui-linux-docker.sh check
+
+# Export a Linux executable for remote manual testing
+./scripts/tui-linux-docker.sh export
+```
+
+The exported binary is written to `dist/linux/beehive-tui-linux-x64`.
+
+For an interactive smoke test inside Docker:
+
+```bash
+./scripts/tui-linux-docker.sh run
+```
+
+For manual validation on a remote Linux machine:
+
+```bash
+scp dist/linux/beehive-tui-linux-x64 user@host:/tmp/beehive-tui
+ssh user@host 'chmod +x /tmp/beehive-tui && /tmp/beehive-tui'
+```
+
+The current target for manual validation is `x86_64` Linux with glibc.
+
 ## Project Structure
 
 ```

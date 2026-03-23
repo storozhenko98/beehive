@@ -11,19 +11,31 @@ ARCH="$(uname -m)"
 
 case "$OS" in
   Darwin) OS_LABEL="darwin" ;;
+  Linux) OS_LABEL="linux" ;;
   *)
-    echo "Error: Unsupported OS: $OS (only macOS is supported currently)"
+    echo "Error: Unsupported OS: $OS (supported TUI targets: macOS arm64, Linux x64)"
     exit 1
     ;;
 esac
 
 case "$ARCH" in
   arm64|aarch64) ARCH_LABEL="arm64" ;;
+  x86_64) ARCH_LABEL="x64" ;;
   *)
-    echo "Error: Unsupported architecture: $ARCH (only Apple Silicon is supported currently)"
+    echo "Error: Unsupported architecture: $ARCH (supported TUI targets: arm64 on macOS, x64 on Linux)"
     exit 1
     ;;
 esac
+
+if [ "$OS_LABEL" = "linux" ] && [ "$ARCH_LABEL" != "x64" ]; then
+  echo "Error: Unsupported Linux architecture: $ARCH (supported TUI target: Linux x64)"
+  exit 1
+fi
+
+if [ "$OS_LABEL" = "darwin" ] && [ "$ARCH_LABEL" != "arm64" ]; then
+  echo "Error: Unsupported macOS architecture: $ARCH (supported TUI target: macOS arm64)"
+  exit 1
+fi
 
 ASSET_NAME="${BINARY_NAME}-${OS_LABEL}-${ARCH_LABEL}"
 
