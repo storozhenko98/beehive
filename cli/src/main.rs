@@ -357,19 +357,43 @@ fn process_event(
                 handle_key(app, *key, terminal)?;
             }
             Event::Paste(text) => {
-                if let AppMode::Input { value, .. } = &mut app.mode {
-                    value.push_str(text);
+                if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(*cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    value.insert_str(byte_pos, text);
+                    *cursor += text.chars().count();
                 } else if let AppMode::BranchPicker {
-                    filter, selected, ..
+                    filter,
+                    filter_cursor,
+                    selected,
+                    ..
                 } = &mut app.mode
                 {
-                    filter.push_str(text);
+                    let byte_pos = filter
+                        .char_indices()
+                        .nth(*filter_cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(filter.len());
+                    filter.insert_str(byte_pos, text);
+                    *filter_cursor += text.chars().count();
                     *selected = 0;
                 } else if let AppMode::CombFinder {
-                    filter, selected, ..
+                    filter,
+                    filter_cursor,
+                    selected,
+                    ..
                 } = &mut app.mode
                 {
-                    filter.push_str(text);
+                    let byte_pos = filter
+                        .char_indices()
+                        .nth(*filter_cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(filter.len());
+                    filter.insert_str(byte_pos, text);
+                    *filter_cursor += text.chars().count();
                     *selected = 0;
                 }
             }
@@ -693,14 +717,64 @@ fn handle_input_key(
         KeyCode::Enter => {
             handle_input_submit(app, terminal)?;
         }
+        KeyCode::Left => {
+            if let AppMode::Input { cursor, .. } = &mut app.mode {
+                if *cursor > 0 {
+                    *cursor -= 1;
+                }
+            }
+        }
+        KeyCode::Right => {
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                if *cursor < value.chars().count() {
+                    *cursor += 1;
+                }
+            }
+        }
+        KeyCode::Home => {
+            if let AppMode::Input { cursor, .. } = &mut app.mode {
+                *cursor = 0;
+            }
+        }
+        KeyCode::End => {
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                *cursor = value.chars().count();
+            }
+        }
         KeyCode::Char(c) => {
-            if let AppMode::Input { value, .. } = &mut app.mode {
-                value.push(c);
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                let byte_pos = value
+                    .char_indices()
+                    .nth(*cursor)
+                    .map(|(i, _)| i)
+                    .unwrap_or(value.len());
+                value.insert(byte_pos, c);
+                *cursor += 1;
             }
         }
         KeyCode::Backspace => {
-            if let AppMode::Input { value, .. } = &mut app.mode {
-                value.pop();
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                if *cursor > 0 {
+                    *cursor -= 1;
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(*cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    value.remove(byte_pos);
+                }
+            }
+        }
+        KeyCode::Delete => {
+            if let AppMode::Input { value, cursor, .. } = &mut app.mode {
+                if *cursor < value.chars().count() {
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(*cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    value.remove(byte_pos);
+                }
             }
         }
         _ => {}
@@ -736,6 +810,7 @@ fn handle_comb_finder(
                 targets,
                 filter,
                 selected,
+                ..
             } = &mut app.mode
             {
                 let filtered_count = app::filter_comb_finder_targets(targets, filter).len();
@@ -751,6 +826,7 @@ fn handle_comb_finder(
                 targets,
                 filter,
                 selected,
+                ..
             } = &mut app.mode
             {
                 let filtered_count = app::filter_comb_finder_targets(targets, filter).len();
@@ -765,6 +841,7 @@ fn handle_comb_finder(
                 targets,
                 filter,
                 selected,
+                ..
             } = mode
             {
                 let filtered = app::filter_comb_finder_targets(&targets, &filter);
@@ -785,22 +862,61 @@ fn handle_comb_finder(
                 }
             }
         }
-        KeyCode::Char(c) => {
+        KeyCode::Left => {
+            if let AppMode::CombFinder { filter_cursor, .. } = &mut app.mode {
+                if *filter_cursor > 0 {
+                    *filter_cursor -= 1;
+                }
+            }
+        }
+        KeyCode::Right => {
             if let AppMode::CombFinder {
-                filter, selected, ..
+                filter,
+                filter_cursor,
+                ..
             } = &mut app.mode
             {
-                filter.push(c);
+                if *filter_cursor < filter.chars().count() {
+                    *filter_cursor += 1;
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::CombFinder {
+                filter,
+                filter_cursor,
+                selected,
+                ..
+            } = &mut app.mode
+            {
+                let byte_pos = filter
+                    .char_indices()
+                    .nth(*filter_cursor)
+                    .map(|(i, _)| i)
+                    .unwrap_or(filter.len());
+                filter.insert(byte_pos, c);
+                *filter_cursor += 1;
                 *selected = 0;
             }
         }
         KeyCode::Backspace => {
             if let AppMode::CombFinder {
-                filter, selected, ..
+                filter,
+                filter_cursor,
+                selected,
+                ..
             } = &mut app.mode
             {
-                filter.pop();
-                *selected = 0;
+                if *filter_cursor > 0 {
+                    *filter_cursor -= 1;
+                    let byte_pos = filter
+                        .char_indices()
+                        .nth(*filter_cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(filter.len());
+                    filter.remove(byte_pos);
+                    *selected = 0;
+                }
             }
         }
         _ => {}
@@ -892,6 +1008,7 @@ fn handle_branch_picker(
                 default_branch,
                 filter,
                 selected,
+                ..
             } = mode
             {
                 let filtered = fuzzy::fuzzy_filter_strings(&branches, &filter);
@@ -911,22 +1028,61 @@ fn handle_branch_picker(
                 start_async_clone(app, terminal, hive_dir_name, comb_name, branch)?;
             }
         }
-        KeyCode::Char(c) => {
+        KeyCode::Left => {
+            if let AppMode::BranchPicker { filter_cursor, .. } = &mut app.mode {
+                if *filter_cursor > 0 {
+                    *filter_cursor -= 1;
+                }
+            }
+        }
+        KeyCode::Right => {
             if let AppMode::BranchPicker {
-                filter, selected, ..
+                filter,
+                filter_cursor,
+                ..
             } = &mut app.mode
             {
-                filter.push(c);
+                if *filter_cursor < filter.chars().count() {
+                    *filter_cursor += 1;
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::BranchPicker {
+                filter,
+                filter_cursor,
+                selected,
+                ..
+            } = &mut app.mode
+            {
+                let byte_pos = filter
+                    .char_indices()
+                    .nth(*filter_cursor)
+                    .map(|(i, _)| i)
+                    .unwrap_or(filter.len());
+                filter.insert(byte_pos, c);
+                *filter_cursor += 1;
                 *selected = 0;
             }
         }
         KeyCode::Backspace => {
             if let AppMode::BranchPicker {
-                filter, selected, ..
+                filter,
+                filter_cursor,
+                selected,
+                ..
             } = &mut app.mode
             {
-                filter.pop();
-                *selected = 0;
+                if *filter_cursor > 0 {
+                    *filter_cursor -= 1;
+                    let byte_pos = filter
+                        .char_indices()
+                        .nth(*filter_cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(filter.len());
+                    filter.remove(byte_pos);
+                    *selected = 0;
+                }
             }
         }
         _ => {}
@@ -1461,6 +1617,7 @@ mod tests {
                 },
             ],
             filter: "bet".to_string(),
+            filter_cursor: 3,
             selected: 0,
         };
 
@@ -1479,6 +1636,7 @@ mod tests {
         app.mode = AppMode::Input {
             prompt: "Comb name".to_string(),
             value: String::new(),
+            cursor: 0,
             action: InputAction::AddHiveUrl,
         };
 
@@ -1501,6 +1659,7 @@ mod tests {
         app.mode = AppMode::Input {
             prompt: "Comb name".to_string(),
             value: "draft".to_string(),
+            cursor: 5,
             action: InputAction::AddHiveUrl,
         };
 
@@ -1551,6 +1710,7 @@ fn handle_input_submit(
                             branches,
                             default_branch,
                             filter: String::new(),
+                            filter_cursor: 0,
                             selected,
                         });
                     }
@@ -1565,6 +1725,7 @@ fn handle_input_submit(
                         app.enter_sidebar_mode(AppMode::Input {
                             prompt: format!("Branch [{}]", default_branch),
                             value: String::new(),
+                            cursor: 0,
                             action: InputAction::NewCombName { hive_dir_name },
                         });
                     }
