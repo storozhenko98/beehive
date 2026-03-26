@@ -560,6 +560,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" copy ", Style::default().fg(OVERLAY0)),
                         Span::styled("│", Style::default().fg(SURFACE1)),
                         Span::styled(
+                            " r",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" rename ", Style::default().fg(OVERLAY0)),
+                        Span::styled("│", Style::default().fg(SURFACE1)),
+                        Span::styled(
                             " f",
                             Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
                         ),
@@ -691,6 +697,10 @@ fn render_help(frame: &mut Frame) {
             Span::styled("Copy comb (duplicate workspace)", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  r        ", key_style),
+            Span::styled("Rename selected comb", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  f        ", key_style),
             Span::styled("Find and jump to a comb", desc_style),
         ]),
@@ -711,7 +721,7 @@ fn render_help(frame: &mut Frame) {
             Span::styled("Resize sidebar", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  r        ", key_style),
+            Span::styled("  R        ", key_style),
             Span::styled("Refresh sidebar", desc_style),
         ]),
         Line::from(vec![

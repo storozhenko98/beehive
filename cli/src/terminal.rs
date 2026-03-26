@@ -874,6 +874,87 @@ fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
     Some(result)
 }
 
+/// Extract the URL at the given screen position, if one exists.
+/// Scans the row for http:// or https:// URLs and checks if `col` falls within one.
+pub fn url_at_position(screen: &vt100::Screen, row: u16, col: u16) -> Option<String> {
+    let (screen_rows, screen_cols) = screen.size();
+    if row >= screen_rows || col >= screen_cols {
+        return None;
+    }
+
+    // Reconstruct the row text from individual cells
+    let mut row_text = String::with_capacity(screen_cols as usize);
+    for c in 0..screen_cols {
+        if let Some(cell) = screen.cell(row, c) {
+            let contents = cell.contents();
+            if contents.is_empty() {
+                row_text.push(' ');
+            } else {
+                row_text.push_str(&contents);
+            }
+        } else {
+            row_text.push(' ');
+        }
+    }
+
+    // Scan for URLs (http:// or https://) and check if col falls within one
+    let bytes = row_text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Look for "http://" or "https://"
+        let prefix_len = if bytes[i..].starts_with(b"https://") {
+            8
+        } else if bytes[i..].starts_with(b"http://") {
+            7
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let start = i;
+        let mut end = start + prefix_len;
+
+        // Extend to the end of the URL (stop at whitespace and common delimiters)
+        while end < bytes.len() {
+            match bytes[end] {
+                b' ' | b'\t' | b'"' | b'\'' | b'<' | b'>' | b'|' | b'{' | b'}' => break,
+                _ => end += 1,
+            }
+        }
+
+        // Strip trailing punctuation that's unlikely to be part of the URL
+        while end > start + prefix_len {
+            match bytes[end - 1] {
+                b'.' | b',' | b';' | b':' | b'!' | b'?' | b')' | b']' => end -= 1,
+                _ => break,
+            }
+        }
+
+        if end > start + prefix_len && (col as usize) >= start && (col as usize) < end {
+            return Some(row_text[start..end].to_string());
+        }
+
+        i = end;
+    }
+
+    None
+}
+
+/// Open a URL in the system browser.
+pub fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(not(target_os = "macos"))]
+    let cmd = "xdg-open";
+
+    let _ = std::process::Command::new(cmd)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 fn set_clipboard(text: &[u8]) {
     use std::process::{Command, Stdio};
 
@@ -1261,5 +1342,63 @@ mod tests {
         let ev = key(KeyCode::F(5), KeyModifiers::CONTROL);
         let bytes = key_to_bytes(&ev, false, false);
         assert_eq!(bytes, b"\x1b[15;5~");
+    }
+
+    // --- URL detection tests ---
+
+    /// Helper: create a vt100 screen with the given text on row 0.
+    fn screen_with_text(text: &str, cols: u16) -> vt100::Parser {
+        let mut parser = vt100::Parser::new(2, cols, 0);
+        parser.process(text.as_bytes());
+        parser
+    }
+
+    #[test]
+    fn test_url_at_position_finds_https() {
+        let parser = screen_with_text("Visit https://example.com/path for info", 60);
+        let screen = parser.screen();
+        // Click on the 'e' of 'example' (col 14)
+        assert_eq!(
+            url_at_position(screen, 0, 14),
+            Some("https://example.com/path".to_string())
+        );
+    }
+
+    #[test]
+    fn test_url_at_position_finds_http() {
+        let parser = screen_with_text("Go to http://test.org now", 40);
+        let screen = parser.screen();
+        assert_eq!(
+            url_at_position(screen, 0, 10),
+            Some("http://test.org".to_string())
+        );
+    }
+
+    #[test]
+    fn test_url_at_position_returns_none_outside_url() {
+        let parser = screen_with_text("Visit https://example.com for info", 60);
+        let screen = parser.screen();
+        // Click on "Visit" (col 2)
+        assert_eq!(url_at_position(screen, 0, 2), None);
+        // Click on "for" (col 28)
+        assert_eq!(url_at_position(screen, 0, 28), None);
+    }
+
+    #[test]
+    fn test_url_at_position_strips_trailing_punctuation() {
+        let parser = screen_with_text("See https://example.com/page.", 40);
+        let screen = parser.screen();
+        assert_eq!(
+            url_at_position(screen, 0, 10),
+            Some("https://example.com/page".to_string())
+        );
+    }
+
+    #[test]
+    fn test_url_at_position_out_of_bounds() {
+        let parser = screen_with_text("https://x.com", 20);
+        let screen = parser.screen();
+        assert_eq!(url_at_position(screen, 5, 0), None); // row out of bounds
+        assert_eq!(url_at_position(screen, 0, 25), None); // col out of bounds
     }
 }

@@ -707,6 +707,37 @@ select option {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: text;
+}
+
+.sidebar-comb-name-input {
+  width: 100%;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: rgba(17, 17, 27, 0.85);
+  border: 1px solid rgba(137, 180, 250, 0.45);
+  border-radius: 5px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+.sidebar-comb-name-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.14);
+}
+
+.sidebar-comb-name-input.error {
+  border-color: var(--danger);
+  box-shadow: none;
+}
+
+.sidebar-comb-error {
+  font-size: 10px;
+  color: var(--danger);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-comb-branch {
@@ -841,6 +872,35 @@ select option {
   color: var(--text-muted);
   font-size: 12px;
   text-align: center;
+}
+
+.sidebar-context-menu {
+  position: fixed;
+  min-width: 144px;
+  padding: 6px;
+  background: rgba(24, 24, 37, 0.98);
+  border: 1px solid rgba(137, 180, 250, 0.18);
+  border-radius: 10px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.45);
+  z-index: 2000;
+  backdrop-filter: blur(14px);
+}
+
+.sidebar-context-menu-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.sidebar-context-menu-item:hover {
+  background: rgba(137, 180, 250, 0.12);
+  color: var(--accent);
 }
 
 .sidebar-add-comb {

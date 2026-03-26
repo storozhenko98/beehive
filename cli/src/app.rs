@@ -176,6 +176,11 @@ pub enum InputAction {
         hive_dir_name: String,
     },
     AddHiveUrl,
+    RenameCombName {
+        hive_dir_name: String,
+        comb_id: String,
+        current_name: String,
+    },
     CopyCombName {
         hive_dir_name: String,
         #[allow(dead_code)]
@@ -929,6 +934,39 @@ impl App {
             });
         } else {
             self.status_message = Some("Select a comb to copy".to_string());
+        }
+    }
+
+    pub fn start_rename_comb(&mut self) {
+        if self.has_pending_work() {
+            self.status_message = Some("Wait for current operation to finish".to_string());
+            return;
+        }
+        if self.items.is_empty() {
+            return;
+        }
+        if let NavItem::Comb {
+            hive_dir_name,
+            comb,
+        } = &self.items[self.selected]
+        {
+            if comb.cloning {
+                self.status_message =
+                    Some("Cannot rename a comb that is still in progress".to_string());
+                return;
+            }
+            self.enter_sidebar_mode(AppMode::Input {
+                prompt: format!("Rename '{}' to", comb.name),
+                value: comb.name.clone(),
+                cursor: comb.name.len(),
+                action: InputAction::RenameCombName {
+                    hive_dir_name: hive_dir_name.clone(),
+                    comb_id: comb.id.clone(),
+                    current_name: comb.name.clone(),
+                },
+            });
+        } else {
+            self.status_message = Some("Select a comb to rename".to_string());
         }
     }
 

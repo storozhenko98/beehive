@@ -45,6 +45,7 @@ pub fn run() {
             hive::delete_comb,
             hive::delete_comb_start,
             hive::delete_comb_run,
+            hive::rename_comb,
             hive::copy_comb,
             hive::copy_comb_start,
             hive::copy_comb_run,
