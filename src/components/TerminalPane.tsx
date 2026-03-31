@@ -33,6 +33,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const initialCwdRef = useRef(cwd);
   // Track which PTY session is "ours" to ignore stale exit events
   const activeSessionRef = useRef<string | null>(null);
   const lastSizeRef = useRef<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
@@ -176,7 +177,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
       // Create the PTY using the unique session ID
       invoke("create_pty", {
         id: sessionId,
-        cwd,
+        cwd: initialCwdRef.current,
         cmd: cmd ?? null,
         args: args ?? null,
         rows: terminal.rows,
@@ -284,7 +285,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
       fitAddonRef.current = null;
       sessionIdRef.current = null;
     };
-  }, [id, cwd, cmd]);
+  }, [id, cmd, args]);
 
   // Focus terminal when it becomes the active pane
   useEffect(() => {

@@ -380,6 +380,20 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     }
   }
 
+  async function handleRenameComb(combId: string, newName: string) {
+    if (!activeHiveDirName) return;
+    const renamed = await invoke<Comb>("rename_comb", {
+      beehiveDir,
+      dirName: activeHiveDirName,
+      combId,
+      newName,
+    });
+    updateRuntime(activeHiveDirName, (rt) => ({
+      ...rt,
+      combs: rt.combs.map((comb) => (comb.id === renamed.id ? renamed : comb)),
+    }));
+  }
+
   function handleCombCreated(comb: Comb) {
     if (!activeHiveDirName) return;
     const hiveDirName = activeHiveDirName;
@@ -576,6 +590,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         onSettings={() => setOverlay({ type: "settings", from: "sidebar" })}
         onHelp={() => setOverlay({ type: "help", from: "sidebar" })}
         onDeleteComb={handleDeleteComb}
+        onRenameComb={handleRenameComb}
         onCopyComb={(combId) => {
           setCopyCombError("");
           setOverlay({ type: "copyComb", sourceCombId: combId });

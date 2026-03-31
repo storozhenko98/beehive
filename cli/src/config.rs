@@ -319,6 +319,73 @@ pub fn reorder_combs(
     save_hive_state(beehive_dir, hive_dir_name, &state)
 }
 
+pub fn rename_comb(
+    beehive_dir: &str,
+    hive_dir_name: &str,
+    comb_id: &str,
+    new_name: &str,
+) -> Result<Comb, String> {
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
+
+    let Some(index) = state.combs.iter().position(|comb| comb.id == comb_id) else {
+        return Err(format!("Comb '{}' not found", comb_id));
+    };
+
+    if state.combs[index].cloning {
+        return Err("Cannot rename a comb that is still in progress".to_string());
+    }
+
+    let current_name = state.combs[index].name.clone();
+    if new_name == current_name {
+        return Err("Comb already has that name".to_string());
+    }
+
+    let existing_combs: Vec<Comb> = state
+        .combs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != index)
+        .map(|(_, comb)| comb.clone())
+        .collect();
+    validate_comb_name(new_name, &existing_combs)?;
+
+    let old_path = PathBuf::from(&state.combs[index].path);
+    let Some(parent) = old_path.parent() else {
+        return Err(format!("Invalid comb path '{}'", state.combs[index].path));
+    };
+    let new_path = parent.join(new_name);
+
+    if rename_target_conflicts(&old_path, &new_path)? {
+        return Err(format!("Directory '{}' already exists", new_name));
+    }
+
+    fs::rename(&old_path, &new_path).map_err(|e| format!("Failed to rename comb directory: {}", e))?;
+
+    state.combs[index].name = new_name.to_string();
+    state.combs[index].path = new_path.to_string_lossy().to_string();
+    let renamed = state.combs[index].clone();
+
+    if let Err(e) = save_hive_state(beehive_dir, hive_dir_name, &state) {
+        let _ = fs::rename(&new_path, &old_path);
+        return Err(format!("Failed to save renamed comb: {}", e));
+    }
+
+    Ok(renamed)
+}
+
+fn rename_target_conflicts(old_path: &Path, new_path: &Path) -> Result<bool, String> {
+    if !new_path.exists() {
+        return Ok(false);
+    }
+
+    Ok(
+        fs::canonicalize(old_path)
+            .map_err(|e| format!("Failed to inspect current comb directory: {}", e))?
+            != fs::canonicalize(new_path)
+                .map_err(|e| format!("Failed to inspect rename target: {}", e))?,
+    )
+}
+
 pub fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String> {
     if name.is_empty() {
         return Err("Name cannot be empty".to_string());
@@ -430,4 +497,93 @@ pub fn chrono_now() -> String {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}", duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+
+    fn unique_temp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("beehive-config-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn rename_comb_updates_state_and_directory() {
+        let beehive_dir = unique_temp_dir();
+        let hive_dir_name = "repo_demo";
+        let hive_dir = beehive_dir.join(hive_dir_name);
+        let dot_hive = hive_dir.join(".hive");
+        let old_dir = hive_dir.join("alpha");
+
+        fs::create_dir_all(&dot_hive).unwrap();
+        fs::create_dir_all(&old_dir).unwrap();
+
+        let state = HiveState {
+            info: HiveInfo {
+                dir_name: hive_dir_name.to_string(),
+                repo_url: "https://github.com/acme/demo.git".to_string(),
+                repo_name: "demo".to_string(),
+                owner: "acme".to_string(),
+                description: None,
+                default_branch: Some("main".to_string()),
+                custom_buttons: vec![],
+            },
+            combs: vec![Comb {
+                id: "comb-1".to_string(),
+                name: "alpha".to_string(),
+                branch: "main".to_string(),
+                path: old_dir.to_string_lossy().to_string(),
+                created_at: "0".to_string(),
+                panes: vec![],
+                cloning: false,
+            }],
+        };
+        save_hive_state(beehive_dir.to_str().unwrap(), hive_dir_name, &state).unwrap();
+
+        let renamed =
+            rename_comb(beehive_dir.to_str().unwrap(), hive_dir_name, "comb-1", "beta").unwrap();
+
+        let new_dir = hive_dir.join("beta");
+        assert_eq!(renamed.name, "beta");
+        assert_eq!(renamed.path, new_dir.to_string_lossy().to_string());
+        assert!(!old_dir.exists());
+        assert!(new_dir.exists());
+
+        let saved = load_hive_state(beehive_dir.to_str().unwrap(), hive_dir_name).unwrap();
+        assert_eq!(saved.combs[0].name, "beta");
+        assert_eq!(saved.combs[0].path, new_dir.to_string_lossy().to_string());
+
+        let _ = fs::remove_dir_all(&beehive_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_target_conflicts_allows_same_entry() {
+        let temp_dir = unique_temp_dir();
+        let old_dir = temp_dir.join("alpha");
+        let alias_dir = temp_dir.join("alpha-link");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        symlink(&old_dir, &alias_dir).unwrap();
+
+        assert!(!rename_target_conflicts(&old_dir, &alias_dir).unwrap());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn rename_target_conflicts_rejects_other_entry() {
+        let temp_dir = unique_temp_dir();
+        let old_dir = temp_dir.join("alpha");
+        let other_dir = temp_dir.join("beta");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::create_dir_all(&other_dir).unwrap();
+
+        assert!(rename_target_conflicts(&old_dir, &other_dir).unwrap());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }

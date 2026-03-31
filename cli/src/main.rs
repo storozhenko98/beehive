@@ -341,7 +341,38 @@ fn process_event(
                     }
                 }
             }
-            Event::Mouse(_) | Event::Paste(_) | Event::FocusGained | Event::FocusLost => {
+            Event::Mouse(mouse) => {
+                if let Some(t) = app.active_terminal() {
+                    let should_open_url =
+                        matches!(mouse.kind, event::MouseEventKind::Up(event::MouseButton::Left))
+                            && t.mouse_protocol_mode() == vt100::MouseProtocolMode::None;
+
+                    if should_open_url {
+                        let col = mouse.column as i32 - term_area.x as i32;
+                        let row = mouse.row as i32 - term_area.y as i32;
+                        if col >= 0
+                            && row >= 0
+                            && col < term_area.width as i32
+                            && row < term_area.height as i32
+                        {
+                            let found = t.with_screen(|screen| {
+                                terminal::url_at_position(screen, row as u16, col as u16)
+                            });
+                            if let Some(url) = found {
+                                terminal::open_url(&url);
+                                // Don't forward this click to the PTY
+                                return Ok(());
+                            }
+                        }
+                    }
+
+                    let input = terminal::event_to_bytes(evt, t, term_area);
+                    if !input.is_empty() {
+                        t.write_input(&input);
+                    }
+                }
+            }
+            Event::Paste(_) | Event::FocusGained | Event::FocusLost => {
                 if let Some(t) = app.active_terminal() {
                     let bytes = terminal::event_to_bytes(evt, t, term_area);
                     if !bytes.is_empty() {
@@ -657,12 +688,13 @@ fn handle_key(
                     }
                 }
                 KeyCode::Char('n') => app.start_new_comb(),
+                KeyCode::Char('r') => app.start_rename_comb(),
                 KeyCode::Char('f') => app.start_comb_finder(),
                 KeyCode::Char('m') => app.start_move_comb(),
                 KeyCode::Char('c') => app.start_copy_comb(),
                 KeyCode::Char('a') => app.start_add_hive(),
                 KeyCode::Char('d') => app.start_delete(),
-                KeyCode::Char('r') => {
+                KeyCode::Char('R') => {
                     app.refresh();
                     app.status_message = Some("Refreshed".to_string());
                 }
@@ -1742,6 +1774,22 @@ fn handle_input_submit(
                     Err(e) => app.status_message = Some(format!("Failed: {}", e)),
                 }
                 app.refresh();
+            }
+            InputAction::RenameCombName {
+                hive_dir_name,
+                comb_id,
+                current_name,
+            } => {
+                match rename_comb(&app.beehive_dir, &hive_dir_name, &comb_id, &value) {
+                    Ok(comb) => {
+                        app.status_message =
+                            Some(format!("Renamed '{}' to '{}'", current_name, comb.name));
+                        app.refresh();
+                    }
+                    Err(e) => {
+                        app.status_message = Some(e);
+                    }
+                }
             }
             InputAction::CopyCombName {
                 hive_dir_name,

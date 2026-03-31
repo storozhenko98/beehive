@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
@@ -880,6 +880,75 @@ pub async fn delete_comb(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_comb(
+    beehive_dir: String,
+    dir_name: String,
+    comb_id: String,
+    new_name: String,
+) -> Result<Comb, String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    let Some(index) = state.combs.iter().position(|comb| comb.id == comb_id) else {
+        return Err(format!("Comb '{}' not found", comb_id));
+    };
+
+    if state.combs[index].cloning {
+        return Err("Cannot rename a comb that is still in progress".to_string());
+    }
+
+    let current_name = state.combs[index].name.clone();
+    if new_name == current_name {
+        return Err("Comb already has that name".to_string());
+    }
+
+    let existing_combs: Vec<Comb> = state
+        .combs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != index)
+        .map(|(_, comb)| comb.clone())
+        .collect();
+    validate_comb_name(&new_name, &existing_combs)?;
+
+    let old_path = PathBuf::from(&state.combs[index].path);
+    let Some(parent) = old_path.parent() else {
+        return Err(format!("Invalid comb path '{}'", state.combs[index].path));
+    };
+    let new_path = parent.join(&new_name);
+
+    if rename_target_conflicts(&old_path, &new_path)? {
+        return Err(format!("Directory '{}' already exists", new_name));
+    }
+
+    fs::rename(&old_path, &new_path)
+        .map_err(|e| format!("Failed to rename comb directory: {}", e))?;
+
+    state.combs[index].name = new_name;
+    state.combs[index].path = new_path.to_string_lossy().to_string();
+    let renamed = state.combs[index].clone();
+
+    if let Err(e) = save_hive_state(&beehive_dir, &dir_name, &state) {
+        let _ = fs::rename(&new_path, &old_path);
+        return Err(format!("Failed to save renamed comb: {}", e));
+    }
+
+    Ok(renamed)
+}
+
+fn rename_target_conflicts(old_path: &Path, new_path: &Path) -> Result<bool, String> {
+    if !new_path.exists() {
+        return Ok(false);
+    }
+
+    Ok(
+        fs::canonicalize(old_path)
+            .map_err(|e| format!("Failed to inspect current comb directory: {}", e))?
+            != fs::canonicalize(new_path)
+                .map_err(|e| format!("Failed to inspect rename target: {}", e))?,
+    )
 }
 
 #[tauri::command]
