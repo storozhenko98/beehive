@@ -323,7 +323,7 @@ fn process_event(
                 // Ctrl+Space: toggle focus back to sidebar
                 if is_focus_toggle(key) {
                     app.focus = Focus::Sidebar;
-                } else if let Some(t) = app.active_terminal() {
+                } else if let Some(t) = app.active_terminal_mut() {
                     // All key events go through the unified encoding pipeline.
                     // No special-casing for Ctrl+C etc. — key_to_bytes handles it.
                     let bytes = terminal::event_to_bytes(evt, t, term_area);
@@ -342,7 +342,25 @@ fn process_event(
                 }
             }
             Event::Mouse(mouse) => {
-                if let Some(t) = app.active_terminal() {
+                let focus_label = match app.focus {
+                    Focus::Sidebar => "sidebar",
+                    Focus::Terminal => "terminal",
+                };
+                if let Some(t) = app.active_terminal_mut() {
+                    if key_trace {
+                        eprintln!(
+                            "[mouse-trace] kind={:?} col={} row={} mods={:?} focus={} mouse_mode={:?} alt_screen={} inner_enhanced={}",
+                            mouse.kind,
+                            mouse.column,
+                            mouse.row,
+                            mouse.modifiers,
+                            focus_label,
+                            t.mouse_protocol_mode(),
+                            t.alternate_screen(),
+                            t.keyboard_enhanced(),
+                        );
+                    }
+
                     let should_open_url =
                         matches!(mouse.kind, event::MouseEventKind::Up(event::MouseButton::Left))
                             && t.mouse_protocol_mode() == vt100::MouseProtocolMode::None;
@@ -368,12 +386,17 @@ fn process_event(
 
                     let input = terminal::event_to_bytes(evt, t, term_area);
                     if !input.is_empty() {
+                        if key_trace {
+                            eprintln!("[mouse-trace] → PTY {} bytes: {:02x?}", input.len(), input);
+                        }
                         t.write_input(&input);
+                    } else if key_trace {
+                        eprintln!("[mouse-trace] → PTY <none>");
                     }
                 }
             }
             Event::Paste(_) | Event::FocusGained | Event::FocusLost => {
-                if let Some(t) = app.active_terminal() {
+                if let Some(t) = app.active_terminal_mut() {
                     let bytes = terminal::event_to_bytes(evt, t, term_area);
                     if !bytes.is_empty() {
                         t.write_input(&bytes);

@@ -826,7 +826,7 @@ impl App {
         let term_cols = (cols * 70 / 100).max(20);
         let term_rows = rows.saturating_sub(3).max(5);
 
-        match EmbeddedTerminal::new(comb_path, term_rows, term_cols) {
+        match EmbeddedTerminal::new(comb_path, term_rows, term_cols, self.keyboard_enhanced) {
             Ok(term) => {
                 self.terminals.insert(comb_id.to_string(), term);
                 self.focus = Focus::Terminal;
