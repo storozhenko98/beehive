@@ -8,25 +8,30 @@ use std::sync::{mpsc, Arc, Mutex};
 use crate::config::full_path;
 use crate::keyboard::{self, KeyboardProtocol};
 
-/// Tracks DECSET 1004 focus-reporting changes seen in the PTY output stream.
+/// Tracks DECSET modes we need to mirror outside the vt100 parser.
 ///
 /// We keep a short tail buffer so mode sequences split across PTY reads are still
 /// detected, and we parse parameter lists so combined DECSET/DECRST sequences
 /// like `CSI ? 1000 ; 1004 h` are handled correctly.
-struct FocusReportingDetector {
+struct DecModeDetector {
     tail: Vec<u8>,
 }
 
-impl FocusReportingDetector {
+impl DecModeDetector {
     fn new() -> Self {
         Self { tail: Vec::new() }
     }
 
-    fn process(&mut self, data: &[u8], focus_reporting: &AtomicBool) {
+    fn process(
+        &mut self,
+        data: &[u8],
+        focus_reporting: &AtomicBool,
+        alternate_scroll: &AtomicBool,
+    ) {
         let mut buf = Vec::with_capacity(self.tail.len() + data.len());
         buf.extend_from_slice(&self.tail);
         buf.extend_from_slice(data);
-        apply_focus_reporting_mode(&buf, focus_reporting);
+        apply_dec_modes(&buf, focus_reporting, alternate_scroll);
 
         const MAX_TAIL: usize = 64;
         let keep = buf.len().min(MAX_TAIL);
@@ -35,7 +40,7 @@ impl FocusReportingDetector {
     }
 }
 
-fn apply_focus_reporting_mode(data: &[u8], focus_reporting: &AtomicBool) {
+fn apply_dec_modes(data: &[u8], focus_reporting: &AtomicBool, alternate_scroll: &AtomicBool) {
     let len = data.len();
     let mut i = 0;
 
@@ -60,8 +65,10 @@ fn apply_focus_reporting_mode(data: &[u8], focus_reporting: &AtomicBool) {
                         .ok()
                         .and_then(|s| s.parse::<u16>().ok())
                     {
-                        if mode == 1004 {
-                            focus_reporting.store(enabled, Ordering::SeqCst);
+                        match mode {
+                            1004 => focus_reporting.store(enabled, Ordering::SeqCst),
+                            1007 => alternate_scroll.store(enabled, Ordering::SeqCst),
+                            _ => {}
                         }
                     }
                 }
@@ -141,6 +148,8 @@ pub struct EmbeddedTerminal {
     keyboard_protocol: KeyboardProtocol,
     /// Whether the outer terminal supports kitty keyboard enhancement.
     outer_keyboard_enhanced: bool,
+    /// Whether the inner app requested alternate scroll mode (DECSET 1007).
+    alternate_scroll: Arc<AtomicBool>,
     /// Tail buffer for terminal query sequences that may be split across PTY reads.
     query_tail: Vec<u8>,
 }
@@ -189,6 +198,7 @@ impl EmbeddedTerminal {
         let parser = vt100::Parser::new(rows, cols, 1000);
         let alive = Arc::new(AtomicBool::new(true));
         let focus_reporting = Arc::new(AtomicBool::new(false));
+        let alternate_scroll = Arc::new(AtomicBool::new(false));
         let master = Arc::new(Mutex::new(pair.master));
         let writer = Arc::new(Mutex::new(writer));
 
@@ -198,18 +208,19 @@ impl EmbeddedTerminal {
         // Background reader: PTY output → channel + OSC 52 clipboard + focus detect + keyboard protocol detect
         let alive_clone = Arc::clone(&alive);
         let focus_clone = Arc::clone(&focus_reporting);
+        let alternate_scroll_clone = Arc::clone(&alternate_scroll);
         let kb_flags_clone = keyboard_protocol.flags_ref();
         std::thread::spawn(move || {
             let mut buf = [0u8; 16384];
             let mut osc52 = Osc52Detector::new();
-            let mut focus_detector = FocusReportingDetector::new();
+            let mut dec_mode_detector = DecModeDetector::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         let data = &buf[..n];
                         osc52.process(data);
-                        focus_detector.process(data, &focus_clone);
+                        dec_mode_detector.process(data, &focus_clone, &alternate_scroll_clone);
                         keyboard::detect_keyboard_protocol(data, &kb_flags_clone);
                         if output_tx.send(data.to_vec()).is_err() {
                             break; // receiver dropped
@@ -231,6 +242,7 @@ impl EmbeddedTerminal {
             focus_reporting,
             keyboard_protocol,
             outer_keyboard_enhanced,
+            alternate_scroll,
             query_tail: Vec::new(),
         })
     }
@@ -305,6 +317,10 @@ impl EmbeddedTerminal {
         self.parser.screen().bracketed_paste()
     }
 
+    pub fn alternate_scroll(&self) -> bool {
+        self.alternate_scroll.load(Ordering::SeqCst)
+    }
+
     /// Whether the inner application has requested enhanced keyboard mode
     /// via the kitty keyboard protocol (CSI > N u).
     pub fn keyboard_enhanced(&self) -> bool {
@@ -333,8 +349,12 @@ impl EmbeddedTerminal {
             }
 
             let Some((consumed, response)) = self.match_terminal_query(&buf[i..]) else {
-                tail_start = i;
-                break;
+                if terminal_query_needs_more_bytes(&buf[i..]) {
+                    tail_start = i;
+                    break;
+                }
+                i += 1;
+                continue;
             };
 
             if let Some(response) = response {
@@ -382,10 +402,8 @@ impl EmbeddedTerminal {
 
         match data[2] {
             b'?' => self.match_private_csi_query(data),
-            b'c' => Some((3, Some(primary_device_attributes_response()))),
-            b'0' if data.get(3) == Some(&b'c') => Some((4, Some(primary_device_attributes_response()))),
             b'>' => self.match_secondary_csi_query(data),
-            _ => Some((1, None)),
+            _ => self.match_standard_csi_query(data),
         }
     }
 
@@ -415,10 +433,6 @@ impl EmbeddedTerminal {
             .and_then(|s| s.parse::<u16>().ok());
 
         match data[i] {
-            b'n' if param == Some(6) => {
-                let (row, col) = self.parser.screen().cursor_position();
-                Some((i + 1, Some(format!("\x1b[?{};{}R", row + 1, col + 1).into_bytes())))
-            }
             b'$' => {
                 if data.get(i + 1) == Some(&b'p') {
                     Some((
@@ -430,24 +444,21 @@ impl EmbeddedTerminal {
                             self.mouse_protocol_mode(),
                             self.mouse_protocol_encoding(),
                             self.bracketed_paste(),
+                            self.alternate_scroll(),
                         )),
                     ))
                 } else if i + 1 >= data.len() {
                     None
                 } else {
-                    Some((1, None))
+                    scan_csi_sequence_len(data).map(|len| (len, None))
                 }
             }
-            _ => Some((1, None)),
+            _ => scan_csi_sequence_len(data).map(|len| (len, None)),
         }
     }
 
-    fn match_secondary_csi_query(&self, data: &[u8]) -> Option<(usize, Option<Vec<u8>>)> {
-        if data.len() < 4 {
-            return None;
-        }
-
-        let mut i = 3;
+    fn match_standard_csi_query(&self, data: &[u8]) -> Option<(usize, Option<Vec<u8>>)> {
+        let mut i = 2;
         while i < data.len() && data[i].is_ascii_digit() {
             i += 1;
         }
@@ -456,24 +467,47 @@ impl EmbeddedTerminal {
             return None;
         }
 
+        let param = std::str::from_utf8(&data[2..i])
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok());
+
         match data[i] {
-            b'c' => Some((i + 1, Some(secondary_device_attributes_response()))),
-            b'q' => Some((i + 1, Some(xtversion_response()))),
-            _ => Some((1, None)),
+            b'n' if param == Some(6) => {
+                let (row, col) = self.parser.screen().cursor_position();
+                Some((i + 1, Some(cursor_position_response(row, col))))
+            }
+            _ => scan_csi_sequence_len(data).map(|len| (len, None)),
         }
+    }
+
+    fn match_secondary_csi_query(&self, data: &[u8]) -> Option<(usize, Option<Vec<u8>>)> {
+        scan_csi_sequence_len(data).map(|len| (len, None))
     }
 }
 
-fn primary_device_attributes_response() -> Vec<u8> {
-    b"\x1b[?62;1;4;6;22c".to_vec()
+fn scan_csi_sequence_len(data: &[u8]) -> Option<usize> {
+    if data.len() < 3 || data[0] != 0x1b || data[1] != b'[' {
+        return None;
+    }
+
+    let mut i = 2;
+    while i < data.len() {
+        let b = data[i];
+        if (0x40..=0x7e).contains(&b) {
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+
+    None
 }
 
-fn secondary_device_attributes_response() -> Vec<u8> {
-    b"\x1b[>0;10;1c".to_vec()
+fn terminal_query_needs_more_bytes(data: &[u8]) -> bool {
+    data.len() < 2 || (data[0] == 0x1b && data[1] == b'[')
 }
 
-fn xtversion_response() -> Vec<u8> {
-    b"\x1bP>|Beehive\x1b\\".to_vec()
+fn cursor_position_response(row: u16, col: u16) -> Vec<u8> {
+    format!("\x1b[{};{}R", row + 1, col + 1).into_bytes()
 }
 
 fn dec_mode_response(
@@ -483,6 +517,7 @@ fn dec_mode_response(
     mouse_protocol_mode: vt100::MouseProtocolMode,
     mouse_protocol_encoding: vt100::MouseProtocolEncoding,
     bracketed_paste: bool,
+    alternate_scroll: bool,
 ) -> Vec<u8> {
     use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
@@ -501,6 +536,7 @@ fn dec_mode_response(
         1003 => enabled_mode_code(matches!(mouse_protocol_mode, MouseProtocolMode::AnyMotion)),
         1004 => enabled_mode_code(focus_reporting),
         1006 => enabled_mode_code(matches!(mouse_protocol_encoding, MouseProtocolEncoding::Sgr)),
+        1007 => enabled_mode_code(alternate_scroll),
         1049 => enabled_mode_code(alternate_screen),
         2004 => enabled_mode_code(bracketed_paste),
         _ => 0,
@@ -934,7 +970,7 @@ fn mouse_to_bytes(
 
     let mode = terminal.mouse_protocol_mode();
     if mode == MouseProtocolMode::None {
-        return vec![];
+        return alternate_scroll_bytes(mouse.kind, terminal);
     }
 
     // Adjust coordinates relative to the terminal pane area
@@ -1048,6 +1084,48 @@ fn mouse_to_bytes(
             }
         }
     }
+}
+
+fn alternate_scroll_bytes(
+    kind: crossterm::event::MouseEventKind,
+    terminal: &EmbeddedTerminal,
+) -> Vec<u8> {
+    use crossterm::event::MouseEventKind;
+
+    if !terminal.alternate_screen() || !terminal.alternate_scroll() {
+        return vec![];
+    }
+
+    match kind {
+        MouseEventKind::ScrollUp => {
+            arrow_key_bytes(crossterm::event::KeyCode::Up, terminal.application_cursor())
+        }
+        MouseEventKind::ScrollDown => {
+            arrow_key_bytes(crossterm::event::KeyCode::Down, terminal.application_cursor())
+        }
+        MouseEventKind::ScrollLeft => {
+            arrow_key_bytes(crossterm::event::KeyCode::Left, terminal.application_cursor())
+        }
+        MouseEventKind::ScrollRight => {
+            arrow_key_bytes(crossterm::event::KeyCode::Right, terminal.application_cursor())
+        }
+        _ => vec![],
+    }
+}
+
+fn arrow_key_bytes(code: crossterm::event::KeyCode, app_cursor: bool) -> Vec<u8> {
+    use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    key_to_bytes(
+        &KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        },
+        app_cursor,
+        false,
+    )
 }
 
 // --- OSC 52 clipboard support ---
@@ -1396,31 +1474,58 @@ mod tests {
     #[test]
     fn test_dec_mode_detector_handles_split_sequences() {
         let focus = AtomicBool::new(false);
-        let mut detector = FocusReportingDetector::new();
+        let alternate_scroll = AtomicBool::new(false);
+        let mut detector = DecModeDetector::new();
 
-        detector.process(b"\x1b[?100", &focus);
+        detector.process(b"\x1b[?100", &focus, &alternate_scroll);
         assert!(!focus.load(Ordering::SeqCst));
 
-        detector.process(b"4h", &focus);
+        detector.process(b"4h", &focus, &alternate_scroll);
         assert!(focus.load(Ordering::SeqCst));
 
-        detector.process(b"\x1b[?1004l", &focus);
+        detector.process(b"\x1b[?1004l", &focus, &alternate_scroll);
         assert!(!focus.load(Ordering::SeqCst));
     }
 
     #[test]
-    fn test_primary_device_attributes_response() {
-        assert_eq!(super::primary_device_attributes_response(), b"\x1b[?62;1;4;6;22c");
+    fn test_dec_mode_detector_tracks_alternate_scroll() {
+        let focus = AtomicBool::new(false);
+        let alternate_scroll = AtomicBool::new(false);
+        let mut detector = DecModeDetector::new();
+
+        detector.process(b"\x1b[?1007h", &focus, &alternate_scroll);
+        assert!(alternate_scroll.load(Ordering::SeqCst));
+
+        detector.process(b"\x1b[?1007l", &focus, &alternate_scroll);
+        assert!(!alternate_scroll.load(Ordering::SeqCst));
     }
 
     #[test]
-    fn test_secondary_device_attributes_response() {
-        assert_eq!(super::secondary_device_attributes_response(), b"\x1b[>0;10;1c");
+    fn test_scan_csi_sequence_len_consumes_complete_standard_query() {
+        assert_eq!(super::scan_csi_sequence_len(b"\x1b[6n"), Some(4));
     }
 
     #[test]
-    fn test_xtversion_response() {
-        assert_eq!(super::xtversion_response(), b"\x1bP>|Beehive\x1b\\");
+    fn test_scan_csi_sequence_len_consumes_complete_private_query() {
+        assert_eq!(super::scan_csi_sequence_len(b"\x1b[?1004$p"), Some(9));
+    }
+
+    #[test]
+    fn test_scan_csi_sequence_len_waits_for_complete_sequence() {
+        assert_eq!(super::scan_csi_sequence_len(b"\x1b[>"), None);
+    }
+
+    #[test]
+    fn test_terminal_query_tail_only_buffers_csi_sequences() {
+        assert!(super::terminal_query_needs_more_bytes(b"\x1b["));
+        assert!(super::terminal_query_needs_more_bytes(b"\x1b[?1004"));
+        assert!(!super::terminal_query_needs_more_bytes(b"\x1b]10;?\x1b\\"));
+        assert!(!super::terminal_query_needs_more_bytes(b"\x1b(B"));
+    }
+
+    #[test]
+    fn test_cursor_position_response_uses_standard_cpr_format() {
+        assert_eq!(super::cursor_position_response(4, 9), b"\x1b[5;10R");
     }
 
     #[test]
@@ -1431,6 +1536,7 @@ mod tests {
             false,
             vt100::MouseProtocolMode::None,
             vt100::MouseProtocolEncoding::Default,
+            false,
             false,
         );
         assert_eq!(bytes, b"\x1b[?1004;1$y");
@@ -1445,8 +1551,35 @@ mod tests {
             vt100::MouseProtocolMode::None,
             vt100::MouseProtocolEncoding::Default,
             false,
+            false,
         );
         assert_eq!(bytes, b"\x1b[?42;0$y");
+    }
+
+    #[test]
+    fn test_dec_mode_response_reports_alternate_scroll() {
+        let bytes = super::dec_mode_response(
+            1007,
+            false,
+            false,
+            vt100::MouseProtocolMode::None,
+            vt100::MouseProtocolEncoding::Default,
+            false,
+            true,
+        );
+        assert_eq!(bytes, b"\x1b[?1007;1$y");
+    }
+
+    #[test]
+    fn test_arrow_key_bytes_respects_application_cursor_mode() {
+        assert_eq!(
+            super::arrow_key_bytes(crossterm::event::KeyCode::Up, false),
+            b"\x1b[A"
+        );
+        assert_eq!(
+            super::arrow_key_bytes(crossterm::event::KeyCode::Up, true),
+            b"\x1bOA"
+        );
     }
 
     // --- Issue #3 keys: Cmd+A, Cmd+Right, Shift+Cmd+Right, Shift+Enter ---
