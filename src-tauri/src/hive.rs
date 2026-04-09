@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
@@ -895,7 +895,7 @@ pub async fn rename_comb(
         return Err(format!("Comb '{}' not found", comb_id));
     };
 
-    if state.combs[index].cloning {
+    if state.combs[index].cloning || state.combs[index].operation.is_some() {
         return Err("Cannot rename a comb that is still in progress".to_string());
     }
 
@@ -913,42 +913,12 @@ pub async fn rename_comb(
         .collect();
     validate_comb_name(&new_name, &existing_combs)?;
 
-    let old_path = PathBuf::from(&state.combs[index].path);
-    let Some(parent) = old_path.parent() else {
-        return Err(format!("Invalid comb path '{}'", state.combs[index].path));
-    };
-    let new_path = parent.join(&new_name);
-
-    if rename_target_conflicts(&old_path, &new_path)? {
-        return Err(format!("Directory '{}' already exists", new_name));
-    }
-
-    fs::rename(&old_path, &new_path)
-        .map_err(|e| format!("Failed to rename comb directory: {}", e))?;
-
     state.combs[index].name = new_name;
-    state.combs[index].path = new_path.to_string_lossy().to_string();
     let renamed = state.combs[index].clone();
 
-    if let Err(e) = save_hive_state(&beehive_dir, &dir_name, &state) {
-        let _ = fs::rename(&new_path, &old_path);
-        return Err(format!("Failed to save renamed comb: {}", e));
-    }
+    save_hive_state(&beehive_dir, &dir_name, &state)?;
 
     Ok(renamed)
-}
-
-fn rename_target_conflicts(old_path: &Path, new_path: &Path) -> Result<bool, String> {
-    if !new_path.exists() {
-        return Ok(false);
-    }
-
-    Ok(
-        fs::canonicalize(old_path)
-            .map_err(|e| format!("Failed to inspect current comb directory: {}", e))?
-            != fs::canonicalize(new_path)
-                .map_err(|e| format!("Failed to inspect rename target: {}", e))?,
-    )
 }
 
 #[tauri::command]
@@ -1010,10 +980,17 @@ fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String>
     if name == ".hive" {
         return Err("'.hive' is a reserved name".to_string());
     }
-    if existing_combs.iter().any(|c| c.name == name) {
+    if existing_combs
+        .iter()
+        .any(|c| c.name == name || comb_path_basename(c) == Some(name))
+    {
         return Err(format!("A comb named '{}' already exists", name));
     }
     Ok(())
+}
+
+fn comb_path_basename(comb: &Comb) -> Option<&str> {
+    Path::new(&comb.path).file_name().and_then(|name| name.to_str())
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
