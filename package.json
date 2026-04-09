@@ -1,6 +1,6 @@
 {
   "name": "beehive",
-  "version": "0.1.105",
+  "version": "0.1.106",
   "description": "Orchestrate coding agents across isolated git workspaces",
   "license": "MIT",
   "author": {
