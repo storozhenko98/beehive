@@ -13,6 +13,14 @@ interface PreflightResult {
   messages: string[];
 }
 
+interface AppConfig {
+  beehiveDir: string | null;
+  muxPreference?: string | null;
+  cliCommand?: string | null;
+  combStartupCommand?: string | null;
+  sidebarWidth?: number;
+}
+
 interface Props {
   beehiveDir: string;
   onBack: () => void;
@@ -37,6 +45,11 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
   const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
   const [updateError, setUpdateError] = useState("");
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [combStartupCommand, setCombStartupCommand] = useState("");
+  const [startupSaving, setStartupSaving] = useState(false);
+  const [startupError, setStartupError] = useState("");
+  const [startupSaved, setStartupSaved] = useState(false);
 
   const checkForUpdates = useCallback(async () => {
     setUpdateStatus("checking");
@@ -58,10 +71,36 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
   useEffect(() => {
     invoke<string>("get_app_config_path").then(setConfigPath);
     invoke<PreflightResult>("preflight_check").then(setPreflight);
+    invoke<AppConfig>("load_app_config").then((config) => {
+      setAppConfig(config);
+      setCombStartupCommand(config.combStartupCommand ?? "");
+    });
     getVersion().then(setAppVersion);
     checkCli();
     checkForUpdates();
   }, [checkForUpdates]);
+
+  async function handleSaveStartupCommand() {
+    setStartupSaving(true);
+    setStartupError("");
+    setStartupSaved(false);
+
+    const trimmed = combStartupCommand.trim();
+    const nextConfig: AppConfig = appConfig
+      ? { ...appConfig, combStartupCommand: trimmed || null }
+      : { beehiveDir, combStartupCommand: trimmed || null };
+
+    try {
+      await invoke("save_app_config", { config: nextConfig });
+      setAppConfig(nextConfig);
+      setCombStartupCommand(trimmed);
+      setStartupSaved(true);
+    } catch (e) {
+      setStartupError(`${e}`);
+    }
+
+    setStartupSaving(false);
+  }
 
   async function checkCli() {
     try {
@@ -224,6 +263,55 @@ export function SettingsScreen({ beehiveDir, onBack, onReset, backLabel }: Props
               </button>
             </>
           )}
+        </div>
+
+        <div className="settings-section">
+          <h3>Comb startup</h3>
+          <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 8 }}>
+            Runs once per comb when Beehive opens that comb for the first time after launch, then drops into an interactive shell.
+          </p>
+          <input
+            type="text"
+            value={combStartupCommand}
+            onChange={(e) => {
+              setCombStartupCommand(e.target.value);
+              setStartupSaved(false);
+              if (startupError) setStartupError("");
+            }}
+            placeholder='e.g. tmux new-session -A -s "$(basename "$BEEHIVE_COMB")"'
+            spellCheck={false}
+            style={{ width: "100%", marginBottom: 8 }}
+          />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              className="btn btn-primary"
+              onClick={handleSaveStartupCommand}
+              disabled={startupSaving}
+            >
+              {startupSaving ? "Saving..." : "Save startup command"}
+            </button>
+            {combStartupCommand && (
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setCombStartupCommand("");
+                  setStartupSaved(false);
+                }}
+                disabled={startupSaving}
+              >
+                Clear
+              </button>
+            )}
+            {startupSaved && (
+              <span style={{ color: "var(--success)", fontSize: 12 }}>
+                Saved
+              </span>
+            )}
+          </div>
+          <p style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 6 }}>
+            Available in the shell as <code>BEEHIVE_COMB</code>.
+          </p>
+          {startupError && <div className="error-box" style={{ marginTop: 6 }}>{startupError}</div>}
         </div>
 
         <div className="settings-section">

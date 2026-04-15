@@ -24,6 +24,18 @@ curl -fsSL beehiveapp.dev/install.sh | bash
 
 You'll be asked to choose `bh` or `beehive` as your command name. Auto-updates on startup.
 
+You can also set the comb startup command programmatically from the TUI binary:
+
+```bash
+bh --startup-cmd 'tmux new-session -A -s "$(basename "$BEEHIVE_COMB")"'
+```
+
+Clear it with:
+
+```bash
+bh --startup-cmd ''
+```
+
 Or download the latest standalone TUI binary from [Releases](https://github.com/storozhenko98/beehive/releases/latest):
 
 - macOS: `beehive-tui-darwin-arm64`
@@ -37,6 +49,7 @@ Or download the latest standalone TUI binary from [Releases](https://github.com/
 - **Agent panes** — Launch Claude Code or any CLI agent alongside your terminals
 - **Copy combs** — Duplicate a workspace including uncommitted work to experiment safely
 - **Custom buttons** — Configure per-repo quick-launch buttons for your agent commands
+- **Comb startup command** — Run a configurable shell command automatically the first time each comb opens after launch
 - **Live branch tracking** — Sidebar updates when you switch branches in the terminal
 - **Layout persistence** — Pane layouts saved to disk and restored on restart
 - **Resizable sidebar** (TUI) — `<`/`>` keys to adjust, persisted across sessions
@@ -148,13 +161,23 @@ All config lives in `~/.beehive/`:
 
 | File | Purpose |
 |------|---------|
-| `~/.beehive/config.json` | App config (beehive directory path, sidebar width, CLI preferences) |
+| `~/.beehive/config.json` | App config (beehive directory path, sidebar width, CLI preferences, comb startup command) |
 | `{beehiveDir}/beehive.json` | Directory marker with version |
 | `{beehiveDir}/repo_{name}/.hive/state.json` | Hive state (repo info, combs, pane layouts, custom buttons) |
 
 Combs are full git clones at `{beehiveDir}/repo_{name}/{combName}/`.
 
 The GUI and TUI share the same config and data — you can use both interchangeably.
+
+Example startup command in `~/.beehive/config.json`:
+
+```json
+{
+  "combStartupCommand": "tmux new-session -A -s \"$(basename \"$BEEHIVE_COMB\")\""
+}
+```
+
+Beehive runs that command once per comb the first time it opens that comb after launch, then returns to an interactive shell in the comb directory.
 
 ## Platform Support
 

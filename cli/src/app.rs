@@ -226,8 +226,10 @@ pub struct App {
     pub pending_refresh: Option<Arc<Mutex<Option<RefreshResult>>>>,
     pub update_available: Option<String>,
     pub sidebar_width: u16,
+    pub comb_startup_command: Option<String>,
     pub deleting_comb_ids: HashSet<String>,
     pub deleting_hive_dir_names: HashSet<String>,
+    pub startup_applied_comb_ids: HashSet<String>,
     /// Whether the outer terminal supports the kitty keyboard enhancement protocol.
     /// When true, crossterm reports SUPER/META modifiers and key event kinds (press/repeat/release).
     pub keyboard_enhanced: bool,
@@ -650,8 +652,12 @@ impl App {
             pending_refresh: None,
             update_available: None,
             sidebar_width: config.sidebar_width,
+            comb_startup_command: config
+                .comb_startup_command
+                .filter(|cmd| !cmd.trim().is_empty()),
             deleting_comb_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
+            startup_applied_comb_ids: HashSet::new(),
             keyboard_enhanced,
             needs_refresh: false,
         };
@@ -826,8 +832,24 @@ impl App {
         let term_cols = (cols * 70 / 100).max(20);
         let term_rows = rows.saturating_sub(3).max(5);
 
-        match EmbeddedTerminal::new(comb_path, term_rows, term_cols, self.keyboard_enhanced) {
+        let should_run_startup = !self.startup_applied_comb_ids.contains(comb_id);
+        let startup_command = if should_run_startup {
+            self.comb_startup_command.as_deref()
+        } else {
+            None
+        };
+
+        match EmbeddedTerminal::new(
+            comb_path,
+            term_rows,
+            term_cols,
+            self.keyboard_enhanced,
+            startup_command,
+        ) {
             Ok(term) => {
+                if startup_command.is_some() {
+                    self.startup_applied_comb_ids.insert(comb_id.to_string());
+                }
                 self.terminals.insert(comb_id.to_string(), term);
                 self.focus = Focus::Terminal;
                 self.last_term_size = (0, 0);
@@ -1188,8 +1210,10 @@ mod tests {
             pending_refresh: None,
             update_available: None,
             sidebar_width: 28,
+            comb_startup_command: None,
             deleting_comb_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
+            startup_applied_comb_ids: HashSet::new(),
             keyboard_enhanced: false,
             needs_refresh: false,
         }

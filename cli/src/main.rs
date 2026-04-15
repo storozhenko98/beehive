@@ -1,4 +1,5 @@
 mod app;
+mod commands;
 mod config;
 mod fuzzy;
 mod keyboard;
@@ -26,6 +27,7 @@ use app::{
     App, AppMode, CloneResult, ConfirmAction, DeleteResult, DeleteTarget, Focus, InputAction,
     RefreshResult,
 };
+use commands::{handle_cli_args, CommandResult};
 use config::*;
 
 type Term = Terminal<CrosstermBackend<io::Stdout>>;
@@ -38,6 +40,10 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(handle_cli_args(std::env::args())?, CommandResult::Exit) {
+        return Ok(());
+    }
+
     // Preflight checks before entering TUI
     let pf = preflight();
     if pf.git.is_none() {
@@ -160,6 +166,7 @@ fn ensure_config() -> Result<String, Box<dyn std::error::Error>> {
         beehive_dir: Some(dir.clone()),
         mux_preference: None,
         cli_command: None,
+        comb_startup_command: None,
         sidebar_width: 28,
     })
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -1519,8 +1526,10 @@ mod tests {
             pending_refresh: None,
             update_available: None,
             sidebar_width: 28,
+            comb_startup_command: None,
             deleting_comb_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
+            startup_applied_comb_ids: HashSet::new(),
             keyboard_enhanced: false,
             needs_refresh: false,
         }
