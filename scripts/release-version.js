@@ -16,10 +16,23 @@ export async function readPackageVersion(filePath) {
   return JSON.parse(fileContents).version;
 }
 
+export async function readReleaseVersion(repoDir) {
+  return readPackageVersion(path.join(repoDir, "package.json"));
+}
+
 export async function setReleaseVersion(repoDir, nextVersion) {
+  assertReleaseVersion(nextVersion);
+
   for (const file of versionFiles) {
     await updateVersionFile(repoDir, file, nextVersion);
   }
+}
+
+export async function bumpReleaseVersion(repoDir) {
+  const currentVersion = await readReleaseVersion(repoDir);
+  const nextVersion = bumpPatchVersion(currentVersion);
+  await setReleaseVersion(repoDir, nextVersion);
+  return { currentVersion, nextVersion };
 }
 
 export function bumpPatchVersion(version) {
@@ -27,20 +40,9 @@ export function bumpPatchVersion(version) {
   return `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
 }
 
-export function compareVersions(left, right) {
-  const leftParts = parseVersion(left);
-  const rightParts = parseVersion(right);
-
-  for (let index = 0; index < leftParts.length; index += 1) {
-    if (leftParts[index] > rightParts[index]) {
-      return 1;
-    }
-    if (leftParts[index] < rightParts[index]) {
-      return -1;
-    }
-  }
-
-  return 0;
+export function assertReleaseVersion(version) {
+  parseVersion(version);
+  return version;
 }
 
 function parseVersion(version) {

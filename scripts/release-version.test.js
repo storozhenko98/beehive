@@ -5,11 +5,12 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  assertReleaseVersion,
+  bumpReleaseVersion,
   bumpPatchVersion,
-  compareVersions,
   readPackageVersion,
   setReleaseVersion,
-} from "./release-version.mjs";
+} from "./release-version.js";
 
 test("setReleaseVersion updates every release version file", async (t) => {
   const repoDir = await fs.mkdtemp(
@@ -143,10 +144,74 @@ test("bumpPatchVersion increments the patch segment", () => {
   assert.equal(bumpPatchVersion("0.1.106"), "0.1.107");
 });
 
-test("compareVersions sorts semantic versions numerically", () => {
-  assert.equal(compareVersions("0.1.106", "0.1.106"), 0);
-  assert.equal(compareVersions("0.1.107", "0.1.106"), 1);
-  assert.equal(compareVersions("0.2.0", "0.10.0"), -1);
+test("assertReleaseVersion rejects invalid versions", () => {
+  assert.equal(assertReleaseVersion("1.2.3"), "1.2.3");
+  assert.throws(() => assertReleaseVersion("foo"), /Unsupported version format/);
+});
+
+test("bumpReleaseVersion increments the current repo version", async (t) => {
+  const repoDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "beehive-release-version-bump-"),
+  );
+
+  t.after(async () => {
+    await fs.rm(repoDir, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(
+    repoDir,
+    "package.json",
+    JSON.stringify({ name: "beehive", version: "1.2.3" }, null, 2) + "\n",
+  );
+  await writeRepoFile(
+    repoDir,
+    "package-lock.json",
+    JSON.stringify(
+      {
+        name: "beehive",
+        version: "1.2.3",
+        packages: { "": { version: "1.2.3" } },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  await writeRepoFile(
+    repoDir,
+    "cli/Cargo.toml",
+    ['[package]', 'name = "beehive-tui"', 'version = "1.2.3"', ""].join("\n"),
+  );
+  await writeRepoFile(
+    repoDir,
+    "src-tauri/Cargo.toml",
+    ['[package]', 'name = "beehive"', 'version = "1.2.3"', ""].join("\n"),
+  );
+  await writeRepoFile(
+    repoDir,
+    "cli/Cargo.lock",
+    ['[[package]]', 'name = "beehive-tui"', 'version = "1.2.3"', ""].join("\n"),
+  );
+  await writeRepoFile(
+    repoDir,
+    "src-tauri/Cargo.lock",
+    ['[[package]]', 'name = "beehive"', 'version = "1.2.3"', ""].join("\n"),
+  );
+  await writeRepoFile(
+    repoDir,
+    "src-tauri/tauri.conf.json",
+    JSON.stringify({ productName: "Beehive", version: "1.2.3" }, null, 2) + "\n",
+  );
+
+  const result = await bumpReleaseVersion(repoDir);
+
+  assert.deepEqual(result, {
+    currentVersion: "1.2.3",
+    nextVersion: "1.2.4",
+  });
+  assert.equal(
+    await readPackageVersion(path.join(repoDir, "package.json")),
+    "1.2.4",
+  );
 });
 
 async function writeRepoFile(repoDir, relativePath, content) {

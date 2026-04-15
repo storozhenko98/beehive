@@ -21,7 +21,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test:release-version": "node --test scripts/release-version.test.mjs",
+    "test:release-version": "node --test scripts/release-version.test.js",
     "tauri": "tauri"
   },
   "dependencies": {

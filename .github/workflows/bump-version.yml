@@ -29,32 +29,16 @@ jobs:
         id: guard
         run: |
           subject=$(git log -1 --pretty=%s)
-          if echo "$subject" | grep -Eiq 'bump version to [0-9]+\.[0-9]+\.[0-9]+$'; then
+          if echo "$subject" | grep -Eiq '^chore(\(release\))?: bump version to [0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
-          fi
-
-          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-            non_version_changes=$(git diff --name-only HEAD^ HEAD -- . \
-              ':(exclude)package.json' \
-              ':(exclude)package-lock.json' \
-              ':(exclude)cli/Cargo.toml' \
-              ':(exclude)cli/Cargo.lock' \
-              ':(exclude)src-tauri/Cargo.toml' \
-              ':(exclude)src-tauri/Cargo.lock' \
-              ':(exclude)src-tauri/tauri.conf.json')
-
-            if [ -z "$non_version_changes" ]; then
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
           fi
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Bump release version files
         if: steps.guard.outputs.skip != 'true'
-        run: node scripts/bump-release-version.mjs
+        run: node scripts/bump-release-version.js
 
       - name: Commit bumped version
         if: steps.guard.outputs.skip != 'true'
@@ -69,6 +53,6 @@ jobs:
 
           version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version)")
 
-          git add package.json package-lock.json cli/Cargo.toml cli/Cargo.lock src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          git add -A
           git commit -m "chore(release): bump version to ${version}"
           git push origin HEAD:main
