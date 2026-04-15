@@ -131,6 +131,17 @@ fn resolve_login_shell() -> String {
     resolve_login_shell_with_candidates(shell_env.as_deref(), &["/bin/bash", "/bin/sh"])
 }
 
+fn normalize_startup_command(startup_command: Option<&str>) -> Option<&str> {
+    startup_command.and_then(|cmd| {
+        let trimmed = cmd.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
+fn startup_wrapper_script() -> &'static str {
+    "eval \"$BEEHIVE_STARTUP_COMMAND\"\nexec \"$SHELL\" -l"
+}
+
 pub struct EmbeddedTerminal {
     /// vt100 parser — owned exclusively by the main thread (no locks needed).
     /// Background reader sends raw bytes via `output_rx` channel instead.
@@ -160,6 +171,7 @@ impl EmbeddedTerminal {
         rows: u16,
         cols: u16,
         outer_keyboard_enhanced: bool,
+        startup_command: Option<&str>,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
 
@@ -174,10 +186,18 @@ impl EmbeddedTerminal {
 
         let shell = resolve_login_shell();
         let mut cmd = CommandBuilder::new(&shell);
-        cmd.arg("-l");
+        if let Some(startup_command) = normalize_startup_command(startup_command) {
+            cmd.arg("-lc");
+            cmd.arg(startup_wrapper_script());
+            cmd.env("SHELL", &shell);
+            cmd.env("BEEHIVE_STARTUP_COMMAND", startup_command);
+        } else {
+            cmd.arg("-l");
+        }
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("PATH", full_path());
+        cmd.env("SHELL", &shell);
         cmd.env("BEEHIVE_COMB", cwd);
 
         let child = pair

@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub mux_preference: Option<String>,
     #[serde(default)]
     pub cli_command: Option<String>,
+    #[serde(default)]
+    pub comb_startup_command: Option<String>,
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: u16,
 }
@@ -162,6 +164,7 @@ pub fn load_app_config() -> Result<AppConfig, String> {
             beehive_dir: None,
             mux_preference: None,
             cli_command: None,
+            comb_startup_command: None,
             sidebar_width: 28,
         });
     }
@@ -531,7 +534,6 @@ mod tests {
 
         let _ = fs::remove_dir_all(&beehive_dir);
     }
-
     #[test]
     fn renamed_comb_reserves_original_directory_name() {
         let beehive_dir = unique_temp_dir();

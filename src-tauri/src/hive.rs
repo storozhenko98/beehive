@@ -203,7 +203,17 @@ pub async fn preflight_check() -> Result<PreflightResult, String> {
 pub struct AppConfig {
     pub beehive_dir: Option<String>,
     #[serde(default)]
+    pub mux_preference: Option<String>,
+    #[serde(default)]
     pub cli_command: Option<String>,
+    #[serde(default)]
+    pub comb_startup_command: Option<String>,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: u16,
+}
+
+fn default_sidebar_width() -> u16 {
+    28
 }
 
 fn app_config_path() -> std::path::PathBuf {
@@ -224,7 +234,13 @@ pub async fn get_home_dir() -> Result<String, String> {
 pub async fn load_app_config() -> Result<AppConfig, String> {
     let path = app_config_path();
     if !path.exists() {
-        return Ok(AppConfig { beehive_dir: None, cli_command: None });
+        return Ok(AppConfig {
+            beehive_dir: None,
+            mux_preference: None,
+            cli_command: None,
+            comb_startup_command: None,
+            sidebar_width: default_sidebar_width(),
+        });
     }
     let data = fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read app config: {}", e))?;

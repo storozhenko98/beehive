@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::Arc;
 
@@ -14,17 +14,40 @@ pub struct PtySession {
 
 pub struct PtyManager {
     pub sessions: HashMap<String, PtySession>,
+    pub startup_initialized_combs: HashSet<String>,
 }
 
 impl PtyManager {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+            startup_initialized_combs: HashSet::new(),
         }
     }
 }
 
 pub type PtyState = Arc<Mutex<PtyManager>>;
+
+fn resolve_login_shell() -> String {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let trimmed = shell.trim();
+    if trimmed.is_empty() {
+        "/bin/zsh".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_startup_command(startup_command: Option<&str>) -> Option<&str> {
+    startup_command.and_then(|cmd| {
+        let trimmed = cmd.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
+fn startup_wrapper_script() -> &'static str {
+    "eval \"$BEEHIVE_STARTUP_COMMAND\"\nexec \"$SHELL\" -l"
+}
 
 #[tauri::command]
 pub async fn create_pty(
@@ -38,6 +61,24 @@ pub async fn create_pty(
     state: State<'_, PtyState>,
 ) -> Result<(), String> {
     let pty_system = native_pty_system();
+
+    let startup_command = if cmd.is_none() {
+        let config = crate::hive::load_app_config().await?;
+        normalize_startup_command(config.comb_startup_command.as_deref()).map(str::to_string)
+    } else {
+        None
+    };
+
+    let startup_command = if let Some(startup_command) = startup_command {
+        let manager = state.lock().await;
+        if manager.startup_initialized_combs.contains(&cwd) {
+            None
+        } else {
+            Some(startup_command)
+        }
+    } else {
+        None
+    };
 
     let pair = pty_system
         .openpty(PtySize {
@@ -59,9 +100,15 @@ pub async fn create_pty(
             cb
         }
         None => {
-            // Default to user's shell
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-            CommandBuilder::new(shell)
+            let shell = resolve_login_shell();
+            let mut cb = CommandBuilder::new(&shell);
+            if let Some(startup_command) = startup_command.as_deref() {
+                cb.arg("-lc");
+                cb.arg(startup_wrapper_script());
+                cb.env("SHELL", &shell);
+                cb.env("BEEHIVE_STARTUP_COMMAND", startup_command);
+            }
+            cb
         }
     };
 
@@ -78,6 +125,7 @@ pub async fn create_pty(
         }
     }
     command.env("PATH", parts.join(":"));
+    command.env("BEEHIVE_COMB", &cwd);
 
     let child = pair
         .slave
@@ -99,6 +147,9 @@ pub async fn create_pty(
 
     {
         let mut manager = state.lock().await;
+        if startup_command.is_some() {
+            manager.startup_initialized_combs.insert(cwd.clone());
+        }
         manager.sessions.insert(
             id.clone(),
             PtySession {
@@ -232,4 +283,23 @@ pub async fn close_pty(id: String, state: State<'_, PtyState>) -> Result<(), Str
         session.child.kill().ok();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_startup_command, startup_wrapper_script};
+
+    #[test]
+    fn normalize_startup_command_ignores_blank_values() {
+        assert_eq!(normalize_startup_command(None), None);
+        assert_eq!(normalize_startup_command(Some("")), None);
+        assert_eq!(normalize_startup_command(Some("   ")), None);
+    }
+
+    #[test]
+    fn startup_wrapper_returns_to_shell_after_command() {
+        let script = startup_wrapper_script();
+        assert!(script.contains("BEEHIVE_STARTUP_COMMAND"));
+        assert!(script.contains("exec \"$SHELL\" -l"));
+    }
 }
