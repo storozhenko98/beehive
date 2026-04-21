@@ -9,6 +9,11 @@ export interface CustomButton {
   cmd: string;
 }
 
+export interface Nest {
+  id: string;
+  name: string;
+}
+
 export interface HiveInfo {
   dirName: string; // repo_myapp
   repoUrl: string; // git@github.com:user/myapp.git
@@ -35,6 +40,7 @@ export interface Comb {
   branch: string; // git branch to pull from
   path: string; // absolute path to the workspace clone
   createdAt: string;
+  nestId?: string;
   panes: PaneConfig[];
   cloning?: boolean; // deprecated, use operation instead
   operation?: CombOperationType; // current operation in progress
@@ -59,6 +65,7 @@ export interface HiveOperationResult {
 
 export interface HiveState {
   info: HiveInfo;
+  nests: Nest[];
   combs: Comb[];
 }
 

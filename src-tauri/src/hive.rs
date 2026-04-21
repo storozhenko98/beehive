@@ -4,7 +4,6 @@ use std::path::Path;
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
-
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BeehiveConfig {
@@ -17,6 +16,13 @@ pub struct BeehiveConfig {
 pub struct CustomButton {
     pub label: String,
     pub cmd: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Nest {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -51,6 +57,8 @@ pub struct Comb {
     pub path: String,
     pub created_at: String,
     #[serde(default)]
+    pub nest_id: Option<String>,
+    #[serde(default)]
     pub panes: Vec<PaneConfig>,
     #[serde(default)]
     pub cloning: bool, // deprecated, use operation instead
@@ -82,7 +90,16 @@ pub struct HiveOperationResult {
 #[serde(rename_all = "camelCase")]
 pub struct HiveState {
     pub info: HiveInfo,
+    #[serde(default)]
+    pub nests: Vec<Nest>,
     pub combs: Vec<Comb>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CombNestAssignment {
+    pub comb_id: String,
+    pub nest_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -163,7 +180,9 @@ pub async fn preflight_check() -> Result<PreflightResult, String> {
         }
         Err(_) => {
             result.ok = false;
-            result.messages.push("git is not installed. Install it from https://git-scm.com".to_string());
+            result
+                .messages
+                .push("git is not installed. Install it from https://git-scm.com".to_string());
         }
     }
 
@@ -176,7 +195,9 @@ pub async fn preflight_check() -> Result<PreflightResult, String> {
         }
         Err(_) => {
             result.ok = false;
-            result.messages.push("gh CLI is not installed. Install it from https://cli.github.com".to_string());
+            result.messages.push(
+                "gh CLI is not installed. Install it from https://cli.github.com".to_string(),
+            );
         }
     }
 
@@ -189,7 +210,9 @@ pub async fn preflight_check() -> Result<PreflightResult, String> {
             }
             Err(_) => {
                 result.ok = false;
-                result.messages.push("gh is not authenticated. Run: gh auth login".to_string());
+                result
+                    .messages
+                    .push("gh is not authenticated. Run: gh auth login".to_string());
             }
         }
     }
@@ -242,8 +265,8 @@ pub async fn load_app_config() -> Result<AppConfig, String> {
             sidebar_width: default_sidebar_width(),
         });
     }
-    let data = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read app config: {}", e))?;
+    let data =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read app config: {}", e))?;
     serde_json::from_str(&data).map_err(|e| format!("Failed to parse app config: {}", e))
 }
 
@@ -251,11 +274,10 @@ pub async fn load_app_config() -> Result<AppConfig, String> {
 pub async fn save_app_config(config: AppConfig) -> Result<(), String> {
     let path = app_config_path();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create ~/.beehive: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create ~/.beehive: {}", e))?;
     }
-    let json = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("Failed to serialize: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("Failed to serialize: {}", e))?;
     fs::write(&path, json).map_err(|e| format!("Failed to write app config: {}", e))
 }
 
@@ -299,9 +321,7 @@ fn list_dir_entries(dir: &std::path::Path) -> Result<Vec<DirEntry>, String> {
 
     let mut results: Vec<DirEntry> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
-        })
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
         .filter(|e| {
             // Hide hidden dirs unless parent is home
             let name = e.file_name().to_string_lossy().to_string();
@@ -342,8 +362,8 @@ pub async fn load_beehive(dir: String) -> Result<BeehiveConfig, String> {
     if !config_path.exists() {
         return Err("No beehive.json found".to_string());
     }
-    let data = fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read config: {}", e))?;
+    let data =
+        fs::read_to_string(&config_path).map_err(|e| format!("Failed to read config: {}", e))?;
     serde_json::from_str(&data).map_err(|e| format!("Failed to parse config: {}", e))
 }
 
@@ -353,8 +373,17 @@ pub async fn verify_repo(repo_url: String) -> Result<HiveInfo, String> {
 
     // Use gh to get repo info
     let repo_spec = format!("{}/{}", owner, repo_name);
-    let json_output = run_cmd("gh", &["repo", "view", &repo_spec, "--json", "name,owner,description,defaultBranchRef,sshUrl,url"])
-        .map_err(|e| format!("Cannot access repo '{}': {}", repo_spec, e))?;
+    let json_output = run_cmd(
+        "gh",
+        &[
+            "repo",
+            "view",
+            &repo_spec,
+            "--json",
+            "name,owner,description,defaultBranchRef,sshUrl,url",
+        ],
+    )
+    .map_err(|e| format!("Cannot access repo '{}': {}", repo_spec, e))?;
 
     let parsed: serde_json::Value = serde_json::from_str(&json_output)
         .map_err(|e| format!("Failed to parse gh output: {}", e))?;
@@ -380,11 +409,12 @@ pub async fn verify_repo(repo_url: String) -> Result<HiveInfo, String> {
     };
 
     // Verify the repo is actually cloneable with git ls-remote
-    run_cmd("git", &["ls-remote", "--heads", &clone_url])
-        .map_err(|e| format!(
+    run_cmd("git", &["ls-remote", "--heads", &clone_url]).map_err(|e| {
+        format!(
             "Repository '{}' is not accessible via git. Check your SSH keys or credentials.\n{}",
             repo_spec, e
-        ))?;
+        )
+    })?;
 
     let dir_name = format!("repo_{}", repo_name);
 
@@ -426,10 +456,11 @@ pub async fn create_hive(beehive_dir: String, repo_url: String) -> Result<HiveIn
     // Write hive state
     let state = HiveState {
         info: info.clone(),
+        nests: vec![],
         combs: vec![],
     };
-    let state_json = serde_json::to_string_pretty(&state)
-        .map_err(|e| format!("Failed to serialize: {}", e))?;
+    let state_json =
+        serde_json::to_string_pretty(&state).map_err(|e| format!("Failed to serialize: {}", e))?;
 
     if let Err(e) = fs::write(dot_hive.join("state.json"), &state_json) {
         // Clean up on failure
@@ -488,14 +519,12 @@ pub async fn list_hives(beehive_dir: String) -> Result<Vec<HiveInfo>, String> {
 
 /// Phase 1: Check if hive can be deleted (no active comb operations)
 #[tauri::command]
-pub async fn delete_hive_start(
-    beehive_dir: String,
-    dir_name: String,
-) -> Result<(), String> {
+pub async fn delete_hive_start(beehive_dir: String, dir_name: String) -> Result<(), String> {
     let state = load_hive_state(&beehive_dir, &dir_name)?;
 
     // Check if any combs have active operations
-    let active_ops: Vec<&str> = state.combs
+    let active_ops: Vec<&str> = state
+        .combs
         .iter()
         .filter_map(|c| c.operation.as_deref())
         .collect();
@@ -519,30 +548,35 @@ pub async fn delete_hive_run(
 
     tokio::task::spawn_blocking(move || {
         let hive_dir = Path::new(&beehive_dir_clone).join(&dir_name_clone);
-        
+
         let delete_result = if hive_dir.exists() {
-            fs::remove_dir_all(&hive_dir)
-                .map_err(|e| format!("Failed to delete: {}", e))
+            fs::remove_dir_all(&hive_dir).map_err(|e| format!("Failed to delete: {}", e))
         } else {
             Ok(())
         };
 
         match delete_result {
             Ok(()) => {
-                let _ = app.emit("hive-operation-done", HiveOperationResult {
-                    hive_dir_name: dir_name_clone,
-                    op_type: "deleting".to_string(),
-                    success: true,
-                    error: None,
-                });
+                let _ = app.emit(
+                    "hive-operation-done",
+                    HiveOperationResult {
+                        hive_dir_name: dir_name_clone,
+                        op_type: "deleting".to_string(),
+                        success: true,
+                        error: None,
+                    },
+                );
             }
             Err(e) => {
-                let _ = app.emit("hive-operation-done", HiveOperationResult {
-                    hive_dir_name: dir_name_clone,
-                    op_type: "deleting".to_string(),
-                    success: false,
-                    error: Some(e),
-                });
+                let _ = app.emit(
+                    "hive-operation-done",
+                    HiveOperationResult {
+                        hive_dir_name: dir_name_clone,
+                        op_type: "deleting".to_string(),
+                        success: false,
+                        error: Some(e),
+                    },
+                );
             }
         }
     });
@@ -561,18 +595,29 @@ pub async fn delete_hive(beehive_dir: String, dir_name: String) -> Result<(), St
 }
 
 #[tauri::command]
-pub async fn list_branches(beehive_dir: String, dir_name: String) -> Result<Vec<RepoBranch>, String> {
+pub async fn list_branches(
+    beehive_dir: String,
+    dir_name: String,
+) -> Result<Vec<RepoBranch>, String> {
     let state = load_hive_state(&beehive_dir, &dir_name)?;
     let repo_spec = format!("{}/{}", state.info.owner, state.info.repo_name);
 
-    let output = run_cmd("gh", &[
-        "api",
-        &format!("repos/{}/branches?per_page=100", repo_spec),
-        "--paginate",
-        "--jq", ".[].name",
-    ]).map_err(|e| format!("Failed to list branches: {}", e))?;
+    let output = run_cmd(
+        "gh",
+        &[
+            "api",
+            &format!("repos/{}/branches?per_page=100", repo_spec),
+            "--paginate",
+            "--jq",
+            ".[].name",
+        ],
+    )
+    .map_err(|e| format!("Failed to list branches: {}", e))?;
 
-    let default_branch = state.info.default_branch.unwrap_or_else(|| "main".to_string());
+    let default_branch = state
+        .info
+        .default_branch
+        .unwrap_or_else(|| "main".to_string());
 
     let branches: Vec<RepoBranch> = output
         .lines()
@@ -606,6 +651,7 @@ pub async fn create_comb_start(
         branch,
         path: comb_dir.to_string_lossy().to_string(),
         created_at: chrono_now(),
+        nest_id: None,
         panes: vec![],
         cloning: true, // for backward compat
         operation: Some("cloning".to_string()),
@@ -663,13 +709,16 @@ pub async fn create_comb_clone(
                 let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
             }
             let _ = fs::remove_dir_all(comb_dir);
-            let _ = app.emit("comb-operation-done", CombOperationResult {
-                hive_dir_name: dir_name_clone,
-                comb_id: comb_id_clone,
-                op_type: "cloning".to_string(),
-                success: false,
-                error: Some(error),
-            });
+            let _ = app.emit(
+                "comb-operation-done",
+                CombOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    comb_id: comb_id_clone,
+                    op_type: "cloning".to_string(),
+                    success: false,
+                    error: Some(error),
+                },
+            );
             return;
         }
 
@@ -692,37 +741,45 @@ pub async fn create_comb_clone(
                     Ok(output) if output.status.success() => true,
                     Ok(output) => {
                         // Clean up: remove comb from state and directory
-                        if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                        if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone)
+                        {
                             state.combs.retain(|c| c.id != comb_id_clone);
                             let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
                         }
                         let _ = fs::remove_dir_all(comb_dir);
-                        let _ = app.emit("comb-operation-done", CombOperationResult {
-                            hive_dir_name: dir_name_clone,
-                            comb_id: comb_id_clone,
-                            op_type: "cloning".to_string(),
-                            success: false,
-                            error: Some(format!(
-                                "Failed to checkout branch '{}': {}",
-                                comb.branch,
-                                String::from_utf8_lossy(&output.stderr)
-                            )),
-                        });
+                        let _ = app.emit(
+                            "comb-operation-done",
+                            CombOperationResult {
+                                hive_dir_name: dir_name_clone,
+                                comb_id: comb_id_clone,
+                                op_type: "cloning".to_string(),
+                                success: false,
+                                error: Some(format!(
+                                    "Failed to checkout branch '{}': {}",
+                                    comb.branch,
+                                    String::from_utf8_lossy(&output.stderr)
+                                )),
+                            },
+                        );
                         return;
                     }
                     Err(e) => {
-                        if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone) {
+                        if let Ok(mut state) = load_hive_state(&beehive_dir_clone, &dir_name_clone)
+                        {
                             state.combs.retain(|c| c.id != comb_id_clone);
                             let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
                         }
                         let _ = fs::remove_dir_all(comb_dir);
-                        let _ = app.emit("comb-operation-done", CombOperationResult {
-                            hive_dir_name: dir_name_clone,
-                            comb_id: comb_id_clone,
-                            op_type: "cloning".to_string(),
-                            success: false,
-                            error: Some(format!("Checkout -b failed: {}", e)),
-                        });
+                        let _ = app.emit(
+                            "comb-operation-done",
+                            CombOperationResult {
+                                hive_dir_name: dir_name_clone,
+                                comb_id: comb_id_clone,
+                                op_type: "cloning".to_string(),
+                                success: false,
+                                error: Some(format!("Checkout -b failed: {}", e)),
+                            },
+                        );
                         return;
                     }
                 }
@@ -738,13 +795,16 @@ pub async fn create_comb_clone(
                 }
                 let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
             }
-            let _ = app.emit("comb-operation-done", CombOperationResult {
-                hive_dir_name: dir_name_clone,
-                comb_id: comb_id_clone,
-                op_type: "cloning".to_string(),
-                success: true,
-                error: None,
-            });
+            let _ = app.emit(
+                "comb-operation-done",
+                CombOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    comb_id: comb_id_clone,
+                    op_type: "cloning".to_string(),
+                    success: true,
+                    error: None,
+                },
+            );
         }
     });
 
@@ -766,6 +826,24 @@ fn get_git_branch(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+#[tauri::command]
+pub async fn get_hive_state(beehive_dir: String, dir_name: String) -> Result<HiveState, String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+    let mut changed = false;
+    for comb in &mut state.combs {
+        if let Some(branch) = get_git_branch(&comb.path) {
+            if branch != comb.branch {
+                comb.branch = branch;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        save_hive_state(&beehive_dir, &dir_name, &state)?;
+    }
+    Ok(state)
 }
 
 #[tauri::command]
@@ -831,10 +909,9 @@ pub async fn delete_comb_run(
 
     tokio::task::spawn_blocking(move || {
         let path = Path::new(&comb_path);
-        
+
         let delete_result = if path.exists() {
-            fs::remove_dir_all(path)
-                .map_err(|e| format!("Failed to delete comb directory: {}", e))
+            fs::remove_dir_all(path).map_err(|e| format!("Failed to delete comb directory: {}", e))
         } else {
             Ok(())
         };
@@ -846,13 +923,16 @@ pub async fn delete_comb_run(
                     state.combs.retain(|c| c.id != comb_id_clone);
                     let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
                 }
-                let _ = app.emit("comb-operation-done", CombOperationResult {
-                    hive_dir_name: dir_name_clone,
-                    comb_id: comb_id_clone,
-                    op_type: "deleting".to_string(),
-                    success: true,
-                    error: None,
-                });
+                let _ = app.emit(
+                    "comb-operation-done",
+                    CombOperationResult {
+                        hive_dir_name: dir_name_clone,
+                        comb_id: comb_id_clone,
+                        op_type: "deleting".to_string(),
+                        success: true,
+                        error: None,
+                    },
+                );
             }
             Err(e) => {
                 // Failed: revert operation flag
@@ -862,13 +942,16 @@ pub async fn delete_comb_run(
                     }
                     let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
                 }
-                let _ = app.emit("comb-operation-done", CombOperationResult {
-                    hive_dir_name: dir_name_clone,
-                    comb_id: comb_id_clone,
-                    op_type: "deleting".to_string(),
-                    success: false,
-                    error: Some(e),
-                });
+                let _ = app.emit(
+                    "comb-operation-done",
+                    CombOperationResult {
+                        hive_dir_name: dir_name_clone,
+                        comb_id: comb_id_clone,
+                        op_type: "deleting".to_string(),
+                        success: false,
+                        error: Some(e),
+                    },
+                );
             }
         }
     });
@@ -990,8 +1073,13 @@ fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String>
     if name.starts_with('.') || name.starts_with('-') {
         return Err("Comb name cannot start with '.' or '-'".to_string());
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return Err("Comb name can only contain letters, numbers, hyphens, and underscores".to_string());
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(
+            "Comb name can only contain letters, numbers, hyphens, and underscores".to_string(),
+        );
     }
     if name == ".hive" {
         return Err("'.hive' is a reserved name".to_string());
@@ -1006,12 +1094,13 @@ fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), String>
 }
 
 fn comb_path_basename(comb: &Comb) -> Option<&str> {
-    Path::new(&comb.path).file_name().and_then(|name| name.to_str())
+    Path::new(&comb.path)
+        .file_name()
+        .and_then(|name| name.to_str())
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst)
-        .map_err(|e| format!("Failed to create directory {:?}: {}", dst, e))?;
+    fs::create_dir_all(dst).map_err(|e| format!("Failed to create directory {:?}: {}", dst, e))?;
     for entry in fs::read_dir(src).map_err(|e| format!("Failed to read {:?}: {}", src, e))? {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let src_path = entry.path();
@@ -1059,6 +1148,7 @@ pub async fn copy_comb_start(
         branch: source.branch.clone(),
         path: new_dir.to_string_lossy().to_string(),
         created_at: chrono_now(),
+        nest_id: source.nest_id.clone(),
         panes: vec![],
         cloning: false,
         operation: Some("copying".to_string()),
@@ -1111,13 +1201,19 @@ pub async fn copy_comb_run(
                 state.combs.retain(|c| c.id != comb_id_clone);
                 let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
             }
-            let _ = app.emit("comb-operation-done", CombOperationResult {
-                hive_dir_name: dir_name_clone,
-                comb_id: comb_id_clone,
-                op_type: "copying".to_string(),
-                success: false,
-                error: Some(format!("Source comb directory does not exist: {}", source_path)),
-            });
+            let _ = app.emit(
+                "comb-operation-done",
+                CombOperationResult {
+                    hive_dir_name: dir_name_clone,
+                    comb_id: comb_id_clone,
+                    op_type: "copying".to_string(),
+                    success: false,
+                    error: Some(format!(
+                        "Source comb directory does not exist: {}",
+                        source_path
+                    )),
+                },
+            );
             return;
         }
 
@@ -1130,13 +1226,16 @@ pub async fn copy_comb_run(
                     }
                     let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
                 }
-                let _ = app.emit("comb-operation-done", CombOperationResult {
-                    hive_dir_name: dir_name_clone,
-                    comb_id: comb_id_clone,
-                    op_type: "copying".to_string(),
-                    success: true,
-                    error: None,
-                });
+                let _ = app.emit(
+                    "comb-operation-done",
+                    CombOperationResult {
+                        hive_dir_name: dir_name_clone,
+                        comb_id: comb_id_clone,
+                        op_type: "copying".to_string(),
+                        success: true,
+                        error: None,
+                    },
+                );
             }
             Err(e) => {
                 // Clean up: remove comb from state and partial directory
@@ -1145,13 +1244,16 @@ pub async fn copy_comb_run(
                     let _ = save_hive_state(&beehive_dir_clone, &dir_name_clone, &state);
                 }
                 let _ = fs::remove_dir_all(new_dir);
-                let _ = app.emit("comb-operation-done", CombOperationResult {
-                    hive_dir_name: dir_name_clone,
-                    comb_id: comb_id_clone,
-                    op_type: "copying".to_string(),
-                    success: false,
-                    error: Some(e),
-                });
+                let _ = app.emit(
+                    "comb-operation-done",
+                    CombOperationResult {
+                        hive_dir_name: dir_name_clone,
+                        comb_id: comb_id_clone,
+                        op_type: "copying".to_string(),
+                        success: false,
+                        error: Some(e),
+                    },
+                );
             }
         }
     });
@@ -1183,7 +1285,10 @@ pub async fn copy_comb(
     let new_dir = hive_dir.join(&new_name);
 
     if !source_dir.exists() {
-        return Err(format!("Source comb directory does not exist: {}", source.path));
+        return Err(format!(
+            "Source comb directory does not exist: {}",
+            source.path
+        ));
     }
 
     copy_dir_recursive(source_dir, &new_dir)?;
@@ -1194,6 +1299,7 @@ pub async fn copy_comb(
         branch: source.branch.clone(),
         path: new_dir.to_string_lossy().to_string(),
         created_at: chrono_now(),
+        nest_id: source.nest_id.clone(),
         panes: vec![],
         cloning: false,
         operation: None,
@@ -1223,6 +1329,97 @@ pub async fn reorder_combs(
     state.combs = ordered;
 
     save_hive_state(&beehive_dir, &dir_name, &state)
+}
+
+fn validate_nest_name(name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Nest name cannot be empty".to_string());
+    }
+    if trimmed.len() > 40 {
+        return Err("Nest name must be 40 characters or fewer".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("Nest name cannot contain control characters".to_string());
+    }
+    Ok(())
+}
+
+fn validate_nests(nests: &[Nest]) -> Result<(), String> {
+    let mut ids = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+
+    for nest in nests {
+        if nest.id.trim().is_empty() {
+            return Err("Nest id cannot be empty".to_string());
+        }
+        if !ids.insert(nest.id.clone()) {
+            return Err(format!("Duplicate nest id '{}'", nest.id));
+        }
+
+        validate_nest_name(&nest.name)?;
+
+        let folded = nest.name.trim().to_lowercase();
+        if !names.insert(folded) {
+            return Err(format!("Nest '{}' already exists", nest.name.trim()));
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_nests(
+    beehive_dir: String,
+    dir_name: String,
+    nests: Vec<Nest>,
+    assignments: Vec<CombNestAssignment>,
+) -> Result<HiveState, String> {
+    let mut state = load_hive_state(&beehive_dir, &dir_name)?;
+
+    validate_nests(&nests)?;
+
+    let nest_ids: std::collections::HashSet<String> =
+        nests.iter().map(|nest| nest.id.clone()).collect();
+    let comb_ids: std::collections::HashSet<String> =
+        state.combs.iter().map(|comb| comb.id.clone()).collect();
+    let mut assignment_map = std::collections::HashMap::new();
+
+    for assignment in assignments {
+        if !comb_ids.contains(&assignment.comb_id) {
+            return Err(format!("Comb '{}' not found", assignment.comb_id));
+        }
+        if let Some(nest_id) = assignment.nest_id.as_ref() {
+            if !nest_ids.contains(nest_id) {
+                return Err(format!("Nest '{}' not found", nest_id));
+            }
+        }
+        assignment_map.insert(assignment.comb_id, assignment.nest_id);
+    }
+
+    for comb in &mut state.combs {
+        if let Some(nest_id) = assignment_map.get(&comb.id) {
+            comb.nest_id = nest_id.clone();
+        }
+        if comb
+            .nest_id
+            .as_ref()
+            .is_some_and(|nest_id| !nest_ids.contains(nest_id))
+        {
+            comb.nest_id = None;
+        }
+    }
+
+    state.nests = nests
+        .into_iter()
+        .map(|nest| Nest {
+            id: nest.id,
+            name: nest.name.trim().to_string(),
+        })
+        .collect();
+
+    save_hive_state(&beehive_dir, &dir_name, &state)?;
+    Ok(state)
 }
 
 #[derive(Serialize)]
@@ -1257,7 +1454,10 @@ pub async fn install_cli(cmd_name: String) -> Result<String, String> {
     if !output.status.success() {
         return Err(format!(
             "Download failed: {}",
-            String::from_utf8_lossy(&output.stderr).lines().next().unwrap_or("unknown error")
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or("unknown error")
         ));
     }
 
@@ -1278,14 +1478,23 @@ pub async fn install_cli(cmd_name: String) -> Result<String, String> {
     // Remove any existing file at the target path
     let dest = Path::new(&install_path);
     if dest.exists() || dest.symlink_metadata().is_ok() {
-        fs::remove_file(dest)
-            .map_err(|e| format!("Failed to remove existing {}: {}. Try: sudo rm {}", install_path, e, install_path))?;
+        fs::remove_file(dest).map_err(|e| {
+            format!(
+                "Failed to remove existing {}: {}. Try: sudo rm {}",
+                install_path, e, install_path
+            )
+        })?;
     }
 
     // Move binary into place
     fs::rename(&tmp, &install_path)
         .or_else(|_| fs::copy(&tmp, &install_path).map(|_| ()))
-        .map_err(|e| format!("Failed to install to {}: {}. Check permissions.", install_path, e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to install to {}: {}. Check permissions.",
+                install_path, e
+            )
+        })?;
     let _ = fs::remove_file(&tmp);
 
     // Save command name preference to config
@@ -1318,8 +1527,9 @@ pub async fn uninstall_cli() -> Result<(), String> {
             let path = format!("/usr/local/bin/{}", name);
             let p = Path::new(&path);
             if p.exists() {
-                fs::remove_file(p)
-                    .map_err(|e| format!("Failed to remove {}: {}. Try: sudo rm {}", path, e, path))?;
+                fs::remove_file(p).map_err(|e| {
+                    format!("Failed to remove {}: {}. Try: sudo rm {}", path, e, path)
+                })?;
                 break;
             }
         }
@@ -1375,29 +1585,36 @@ fn parse_repo_url(url: &str) -> Result<(String, String), String> {
     //         https://github.com/owner/repo.git
     //         https://github.com/owner/repo
     //         owner/repo
-    let cleaned = url
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches(".git");
+    let cleaned = url.trim().trim_end_matches('/').trim_end_matches(".git");
 
     let (owner, repo_name) = if cleaned.contains(':') && cleaned.starts_with("git@") {
         // SSH format: git@github.com:owner/repo
-        let after_colon = cleaned.split(':').last()
-            .ok_or("Invalid SSH URL format")?;
+        let after_colon = cleaned.split(':').last().ok_or("Invalid SSH URL format")?;
         let parts: Vec<&str> = after_colon.split('/').collect();
         if parts.len() >= 2 {
-            (parts[parts.len() - 2].to_string(), parts[parts.len() - 1].to_string())
+            (
+                parts[parts.len() - 2].to_string(),
+                parts[parts.len() - 1].to_string(),
+            )
         } else {
-            return Err(format!("Cannot parse SSH URL: {}. Expected format: git@github.com:owner/repo", url));
+            return Err(format!(
+                "Cannot parse SSH URL: {}. Expected format: git@github.com:owner/repo",
+                url
+            ));
         }
     } else if cleaned.contains("github.com/") {
-        let after_gh = cleaned.split("github.com/").last()
+        let after_gh = cleaned
+            .split("github.com/")
+            .last()
             .ok_or("Invalid GitHub URL")?;
         let parts: Vec<&str> = after_gh.split('/').collect();
         if parts.len() >= 2 {
             (parts[0].to_string(), parts[1].to_string())
         } else {
-            return Err(format!("Cannot parse GitHub URL: {}. Expected format: https://github.com/owner/repo", url));
+            return Err(format!(
+                "Cannot parse GitHub URL: {}. Expected format: https://github.com/owner/repo",
+                url
+            ));
         }
     } else {
         // Try owner/repo format
@@ -1405,7 +1622,10 @@ fn parse_repo_url(url: &str) -> Result<(String, String), String> {
         if parts.len() == 2 {
             (parts[0].to_string(), parts[1].to_string())
         } else {
-            return Err(format!("Cannot parse '{}'. Use owner/repo, a GitHub URL, or SSH URL.", url));
+            return Err(format!(
+                "Cannot parse '{}'. Use owner/repo, a GitHub URL, or SSH URL.",
+                url
+            ));
         }
     };
 
@@ -1425,8 +1645,8 @@ fn load_hive_state(beehive_dir: &str, dir_name: &str) -> Result<HiveState, Strin
         .join(dir_name)
         .join(".hive")
         .join("state.json");
-    let data = fs::read_to_string(&state_path)
-        .map_err(|e| format!("Failed to read hive state: {}", e))?;
+    let data =
+        fs::read_to_string(&state_path).map_err(|e| format!("Failed to read hive state: {}", e))?;
     serde_json::from_str(&data).map_err(|e| format!("Failed to parse hive state: {}", e))
 }
 
@@ -1435,8 +1655,8 @@ fn save_hive_state(beehive_dir: &str, dir_name: &str, state: &HiveState) -> Resu
         .join(dir_name)
         .join(".hive")
         .join("state.json");
-    let json = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("Failed to serialize: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(state).map_err(|e| format!("Failed to serialize: {}", e))?;
     fs::write(&state_path, json).map_err(|e| format!("Failed to write state: {}", e))
 }
 

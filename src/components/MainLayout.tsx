@@ -5,12 +5,13 @@ import { Sidebar } from "./Sidebar";
 import { WorkspaceGrid } from "./WorkspaceGrid";
 import { NewCombModal } from "./NewCombModal";
 import { CopyCombModal } from "./CopyCombModal";
+import { CreateNestModal } from "./CreateNestModal";
 import { CustomButtonsModal } from "./CustomButtonsModal";
 import { HiveListScreen } from "./HiveListScreen";
 import { SettingsScreen } from "./SettingsScreen";
 import { HelpScreen } from "./HelpScreen";
 import { Toast } from "./Toast";
-import type { HiveInfo, Comb, PaneConfig, CustomButton, CombOperationResult, HiveOperationResult } from "../types";
+import type { HiveInfo, Comb, PaneConfig, CustomButton, CombOperationResult, HiveOperationResult, Nest, HiveState } from "../types";
 
 // Normalize comb: convert legacy `cloning` to `operation`
 function normalizeComb(comb: Comb): Comb {
@@ -36,15 +37,28 @@ type Overlay =
   | { type: "settings"; from: "sidebar" | "manageHives" }
   | { type: "help"; from: "sidebar" | "manageHives" }
   | { type: "customButtons" }
+  | { type: "createNest"; combId?: string }
   | { type: "copyComb"; sourceCombId: string };
 
 // Per-hive runtime state (combs, opened combs, panes, active comb)
 interface HiveRuntime {
+  nests: Nest[];
   combs: Comb[];
   openedCombs: Set<string>;
   panesByComb: Map<string, PaneConfig[]>;
   activeCombId: string | null;
   focusedPaneByComb: Map<string, string>;
+}
+
+function emptyRuntime(): HiveRuntime {
+  return {
+    nests: [],
+    combs: [],
+    openedCombs: new Set(),
+    panesByComb: new Map(),
+    activeCombId: null,
+    focusedPaneByComb: new Map(),
+  };
 }
 
 export function MainLayout({ beehiveDir, onReset }: Props) {
@@ -212,12 +226,12 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
   function getOrCreateRuntime(dirName: string): HiveRuntime {
     const existing = hiveRuntimes.get(dirName);
     if (existing) return existing;
-    return { combs: [], openedCombs: new Set(), panesByComb: new Map(), activeCombId: null, focusedPaneByComb: new Map() };
+    return emptyRuntime();
   }
 
   function updateRuntime(dirName: string, updater: (rt: HiveRuntime) => HiveRuntime) {
     setHiveRuntimes((prev) => {
-      const current = prev.get(dirName) ?? { combs: [], openedCombs: new Set(), panesByComb: new Map(), activeCombId: null, focusedPaneByComb: new Map() };
+      const current = prev.get(dirName) ?? emptyRuntime();
       const updated = updater(current);
       const next = new Map(prev);
       next.set(dirName, updated);
@@ -232,13 +246,17 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     const runtime = hiveRuntimes.get(hive.dirName);
     if (!runtime || runtime.combs.length === 0) {
       try {
-        const list = await invoke<Comb[]>("list_combs", {
+        const state = await invoke<HiveState>("get_hive_state", {
           beehiveDir,
           dirName: hive.dirName,
         });
-        updateRuntime(hive.dirName, (rt) => ({ ...rt, combs: normalizeCombs(list) }));
+        updateRuntime(hive.dirName, (rt) => ({
+          ...rt,
+          nests: state.nests ?? [],
+          combs: normalizeCombs(state.combs),
+        }));
       } catch (e) {
-        console.error("Failed to list combs:", e);
+        console.error("Failed to load hive state:", e);
       }
     }
   }
@@ -468,28 +486,106 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     }
   }
 
-  const handleReorderCombs = useCallback(async (combIds: string[]) => {
-    if (!activeHiveDirName) return;
+  const handleReorderCombs = useCallback(async (nextCombs: Comb[]) => {
+    if (!activeHiveDirName || !activeRuntime) return;
     const hiveDirName = activeHiveDirName;
+    const combIds = nextCombs.map((comb) => comb.id);
 
     // Optimistic update
-    updateRuntime(hiveDirName, (rt) => {
-      const byId = new Map(rt.combs.map((c) => [c.id, c]));
-      const reordered = combIds.map((id) => byId.get(id)).filter(Boolean) as Comb[];
-      // Append any combs not in the list (safety)
-      const idSet = new Set(combIds);
-      for (const c of rt.combs) {
-        if (!idSet.has(c.id)) reordered.push(c);
-      }
-      return { ...rt, combs: reordered };
-    });
+    updateRuntime(hiveDirName, (rt) => ({ ...rt, combs: nextCombs }));
 
     try {
+      const state = await invoke<HiveState>("save_nests", {
+        beehiveDir,
+        dirName: hiveDirName,
+        nests: activeRuntime.nests,
+        assignments: nextCombs.map((comb) => ({
+          combId: comb.id,
+          nestId: comb.nestId ?? null,
+        })),
+      });
       await invoke("reorder_combs", { beehiveDir, dirName: hiveDirName, combIds });
+      const byId = new Map(normalizeCombs(state.combs).map((comb) => [comb.id, comb]));
+      const orderedCombs = nextCombs.map((comb) => byId.get(comb.id) ?? comb);
+      updateRuntime(hiveDirName, (rt) => ({
+        ...rt,
+        nests: state.nests ?? [],
+        combs: orderedCombs,
+      }));
     } catch (e) {
       console.error("Failed to reorder combs:", e);
     }
-  }, [activeHiveDirName, beehiveDir]);
+  }, [activeHiveDirName, activeRuntime, beehiveDir]);
+
+  async function persistNestState(nests: Nest[], combs: Comb[]) {
+    if (!activeHiveDirName) {
+      throw new Error("No active hive selected");
+    }
+    const state = await invoke<HiveState>("save_nests", {
+      beehiveDir,
+      dirName: activeHiveDirName,
+      nests,
+      assignments: combs.map((comb) => ({
+        combId: comb.id,
+        nestId: comb.nestId ?? null,
+      })),
+    });
+
+    updateRuntime(activeHiveDirName, (rt) => ({
+      ...rt,
+      nests: state.nests ?? [],
+      combs: normalizeCombs(state.combs),
+    }));
+    return state;
+  }
+
+  async function handleCreateNest(name: string, combId?: string) {
+    if (!activeRuntime) {
+      throw new Error("No active hive selected");
+    }
+
+    const nextNest: Nest = {
+      id: crypto.randomUUID(),
+      name,
+    };
+    const nextCombs = activeRuntime.combs.map((comb) =>
+      comb.id === combId ? { ...comb, nestId: nextNest.id } : comb
+    );
+
+    await persistNestState([...activeRuntime.nests, nextNest], nextCombs);
+    setOverlay(null);
+  }
+
+  async function handleAssignCombToNest(combId: string, nestId?: string) {
+    if (!activeRuntime) return;
+
+    const nextCombs = activeRuntime.combs.map((comb) =>
+      comb.id === combId ? { ...comb, nestId } : comb
+    );
+
+    await persistNestState(activeRuntime.nests, nextCombs);
+  }
+
+  async function handleRenameNest(nestId: string, newName: string) {
+    if (!activeRuntime) return;
+
+    const nextNests = activeRuntime.nests.map((nest) =>
+      nest.id === nestId ? { ...nest, name: newName } : nest
+    );
+
+    await persistNestState(nextNests, activeRuntime.combs);
+  }
+
+  async function handleDeleteNest(nestId: string) {
+    if (!activeRuntime) return;
+
+    const nextNests = activeRuntime.nests.filter((nest) => nest.id !== nestId);
+    const nextCombs = activeRuntime.combs.map((comb) =>
+      comb.nestId === nestId ? { ...comb, nestId: undefined } : comb
+    );
+
+    await persistNestState(nextNests, nextCombs);
+  }
 
   async function saveCustomButtons(buttons: CustomButton[]) {
     if (!activeHiveDirName) return;
@@ -579,6 +675,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
       <Sidebar
         hives={hives}
         activeHive={activeHive}
+        nests={activeRuntime?.nests ?? []}
         combs={currentCombs}
         activeCombId={currentActiveCombId}
         onSelectHive={(hive) => {
@@ -589,6 +686,10 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         onManageHives={() => setOverlay({ type: "manageHives" })}
         onSettings={() => setOverlay({ type: "settings", from: "sidebar" })}
         onHelp={() => setOverlay({ type: "help", from: "sidebar" })}
+        onNewNest={(combId) => setOverlay({ type: "createNest", combId })}
+        onAssignCombToNest={handleAssignCombToNest}
+        onRenameNest={handleRenameNest}
+        onDeleteNest={handleDeleteNest}
         onDeleteComb={handleDeleteComb}
         onRenameComb={handleRenameComb}
         onCopyComb={(combId) => {
@@ -727,6 +828,14 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
               }))
             )}
           onSave={saveCustomButtons}
+          onClose={() => setOverlay(null)}
+        />
+      )}
+
+      {overlay?.type === "createNest" && activeHive && activeRuntime && (
+        <CreateNestModal
+          existingNests={activeRuntime.nests}
+          onCreate={(name) => handleCreateNest(name, overlay.combId)}
           onClose={() => setOverlay(null)}
         />
       )}

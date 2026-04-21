@@ -45,6 +45,7 @@ Or download the latest standalone TUI binary from [Releases](https://github.com/
 
 - **Multi-repo management** — Add GitHub repositories and switch between them instantly
 - **Isolated workspaces** — Full git clones ("combs") on any branch, each in its own directory
+- **Nest grouping** — Organize combs into named nests inside a hive
 - **Persistent terminals** — Real PTY sessions that stay alive across workspace and repo switches
 - **Agent panes** — Launch Claude Code or any CLI agent alongside your terminals
 - **Copy combs** — Duplicate a workspace including uncommitted work to experiment safely
@@ -59,15 +60,17 @@ Or download the latest standalone TUI binary from [Releases](https://github.com/
 | Term | What it is |
 |------|-----------|
 | **Hive** | A linked GitHub repository |
+| **Nest** | An optional group of combs inside a hive |
 | **Comb** | An isolated workspace clone of a hive, on a specific branch |
 | **Pane** | A terminal or agent session inside a workspace |
 
 ## How It Works
 
 1. **Add a hive** — Link a GitHub repo by URL
-2. **Create a comb** — Clone it to an isolated directory on any branch
-3. **Open panes** — Launch terminals and agents side-by-side
-4. **Switch freely** — All terminals persist in the background across workspace and hive switches
+2. **Create nests if you want structure** — Group related combs together inside the hive
+3. **Create a comb** — Clone it to an isolated directory on any branch
+4. **Open panes** — Launch terminals and agents side-by-side
+5. **Switch freely** — All terminals persist in the background across workspace and hive switches
 
 ## Prerequisites
 
@@ -163,7 +166,7 @@ All config lives in `~/.beehive/`:
 |------|---------|
 | `~/.beehive/config.json` | App config (beehive directory path, sidebar width, CLI preferences, comb startup command) |
 | `{beehiveDir}/beehive.json` | Directory marker with version |
-| `{beehiveDir}/repo_{name}/.hive/state.json` | Hive state (repo info, combs, pane layouts, custom buttons) |
+| `{beehiveDir}/repo_{name}/.hive/state.json` | Hive state (repo info, nests, combs, pane layouts, custom buttons) |
 
 Combs are full git clones at `{beehiveDir}/repo_{name}/{combName}/`.
 
