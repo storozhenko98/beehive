@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 export function Mockup() {
   return (
     <section className="py-5 pb-20">
@@ -31,10 +33,14 @@ export function Mockup() {
               Combs
             </div>
             <div className="flex-1 overflow-hidden py-0.5">
-              <CombItem name="feature-auth" branch="feat/oauth" active />
-              <CombItem name="fix-payments" branch="main" />
-              <CombItem name="refactor-api" branch="dev" />
-              <CombItem name="experiment-v2" branch="experiment" />
+              <NestSection name="Client Work">
+                <CombItem name="feature-auth" branch="feat/oauth" active />
+                <CombItem name="fix-payments" branch="main" />
+              </NestSection>
+              <NestSection name="Experiments">
+                <CombItem name="refactor-api" branch="dev" />
+                <CombItem name="experiment-v2" branch="experiment" />
+              </NestSection>
             </div>
             <div className="mx-2.5 mb-1.5 py-1.5 rounded-md border border-dashed border-ctp-surface0 text-center text-[11px] text-ctp-subtext0">
               + New Comb
@@ -156,6 +162,23 @@ export function Mockup() {
         </div>
       </div>
     </section>
+  );
+}
+
+function NestSection({
+  name,
+  children,
+}: {
+  name: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="pb-1">
+      <div className="px-3.5 py-1 text-[9px] font-semibold tracking-wide uppercase text-ctp-subtext0/80">
+        {name}
+      </div>
+      {children}
+    </div>
   );
 }
 

@@ -234,10 +234,73 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                     ]))
                 }
             }
+            NavItem::Nest {
+                hive_dir_name,
+                nest,
+                expanded,
+                comb_count,
+            } => {
+                if app.deleting_nest_ids.contains(&nest.id) {
+                    const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                    let ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
+                    let frame_char = SPINNER[(ms / 80) as usize % SPINNER.len()];
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("   {} ", frame_char), Style::default().fg(RED)),
+                        Span::styled(
+                            nest.name.clone(),
+                            Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" (deleting)".to_string(), Style::default().fg(SURFACE1)),
+                    ]))
+                } else if delete_mode_hive == Some(hive_dir_name.as_str()) {
+                    let is_marked = app.is_nest_marked_for_delete(&nest.id);
+                    let marker = if is_marked { "[x]" } else { "[ ]" };
+                    let marker_color = if is_marked { RED } else { OVERLAY0 };
+                    let name_color = if is_marked { TEXT } else { YELLOW };
+                    let count_str = if *comb_count > 0 {
+                        format!(" ({})", comb_count)
+                    } else {
+                        String::new()
+                    };
+
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("   {} ", marker), Style::default().fg(marker_color)),
+                        Span::styled(
+                            nest.name.clone(),
+                            Style::default().fg(name_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(count_str, Style::default().fg(OVERLAY0)),
+                    ]))
+                } else {
+                    let arrow = if *expanded { "▾" } else { "▸" };
+                    let count_str = if *comb_count > 0 {
+                        format!(" ({})", comb_count)
+                    } else {
+                        String::new()
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("   {} ", arrow), Style::default().fg(YELLOW)),
+                        Span::styled(
+                            nest.name.clone(),
+                            Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(count_str, Style::default().fg(OVERLAY0)),
+                    ]))
+                }
+            }
             NavItem::Comb {
                 hive_dir_name,
                 comb,
             } => {
+                let indent = if comb.nest_id.is_some() {
+                    "     "
+                } else {
+                    "   "
+                };
                 if comb.cloning {
                     // In-progress comb: animated spinner + dim text
                     const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -248,7 +311,10 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                     let frame_char = SPINNER[(ms / 80) as usize % SPINNER.len()];
 
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("   {} ", frame_char), Style::default().fg(YELLOW)),
+                        Span::styled(
+                            format!("{}{} ", indent, frame_char),
+                            Style::default().fg(YELLOW),
+                        ),
                         Span::styled(comb.name.clone(), Style::default().fg(OVERLAY0)),
                         Span::styled(" (in progress)".to_string(), Style::default().fg(SURFACE1)),
                     ]))
@@ -261,14 +327,17 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                     let frame_char = SPINNER[(ms / 80) as usize % SPINNER.len()];
 
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("   {} ", frame_char), Style::default().fg(RED)),
+                        Span::styled(
+                            format!("{}{} ", indent, frame_char),
+                            Style::default().fg(RED),
+                        ),
                         Span::styled(comb.name.clone(), Style::default().fg(RED)),
                         Span::styled(" (deleting)".to_string(), Style::default().fg(SURFACE1)),
                     ]))
                 } else if is_moving && i == app.selected {
                     // Comb being moved: mauve highlight with move indicator
                     ListItem::new(Line::from(vec![
-                        Span::styled("   ↕ ".to_string(), Style::default().fg(MAUVE)),
+                        Span::styled(format!("{}↕ ", indent), Style::default().fg(MAUVE)),
                         Span::styled(
                             comb.name.clone(),
                             Style::default().fg(MAUVE).add_modifier(Modifier::BOLD),
@@ -282,7 +351,10 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                     let name_color = if is_marked { TEXT } else { SUBTEXT0 };
 
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("   {} ", marker), Style::default().fg(marker_color)),
+                        Span::styled(
+                            format!("{}{} ", indent, marker),
+                            Style::default().fg(marker_color),
+                        ),
                         Span::styled(comb.name.clone(), Style::default().fg(name_color)),
                         Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
                     ]))
@@ -305,7 +377,10 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                     let name_color = if is_active { GREEN } else { TEXT };
 
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("   {}", marker), Style::default().fg(marker_color)),
+                        Span::styled(
+                            format!("{}{}", indent, marker),
+                            Style::default().fg(marker_color),
+                        ),
                         Span::styled(comb.name.clone(), Style::default().fg(name_color)),
                         Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
                     ]))
@@ -551,7 +626,13 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                             " n",
                             Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(" new ", Style::default().fg(OVERLAY0)),
+                        Span::styled(" comb ", Style::default().fg(OVERLAY0)),
+                        Span::styled("│", Style::default().fg(SURFACE1)),
+                        Span::styled(
+                            " N",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" nest ", Style::default().fg(OVERLAY0)),
                         Span::styled("│", Style::default().fg(SURFACE1)),
                         Span::styled(
                             " c",
@@ -675,6 +756,10 @@ fn render_help(frame: &mut Frame) {
             dim_style,
         )),
         Line::from(Span::styled(
+            "  Nest = an optional group of related combs",
+            dim_style,
+        )),
+        Line::from(Span::styled(
             "  Comb = an isolated git clone / workspace",
             dim_style,
         )),
@@ -693,12 +778,16 @@ fn render_help(frame: &mut Frame) {
             Span::styled("New comb (clone + branch)", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  N        ", key_style),
+            Span::styled("New nest", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  c        ", key_style),
             Span::styled("Copy comb (duplicate workspace)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  r        ", key_style),
-            Span::styled("Rename selected comb", desc_style),
+            Span::styled("Rename selected comb or nest", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  f        ", key_style),

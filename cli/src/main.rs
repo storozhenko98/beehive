@@ -236,8 +236,14 @@ fn run_app(
                 if let Ok(hives) = list_hives(&beehive_dir) {
                     let mut hive_data = Vec::new();
                     for info in hives {
-                        let combs = get_combs(&beehive_dir, &info.dir_name).unwrap_or_default();
-                        hive_data.push((info, combs));
+                        let state =
+                            load_hive_state_with_branches(&beehive_dir, &info.dir_name).ok();
+                        let nests = state
+                            .as_ref()
+                            .map(|state| state.nests.clone())
+                            .unwrap_or_default();
+                        let combs = state.map(|state| state.combs).unwrap_or_default();
+                        hive_data.push((info, nests, combs));
                     }
                     if let Ok(mut guard) = slot_clone.lock() {
                         *guard = Some(RefreshResult { hive_data });
@@ -368,9 +374,11 @@ fn process_event(
                         );
                     }
 
-                    let should_open_url =
-                        matches!(mouse.kind, event::MouseEventKind::Up(event::MouseButton::Left))
-                            && t.mouse_protocol_mode() == vt100::MouseProtocolMode::None;
+                    let should_open_url = matches!(
+                        mouse.kind,
+                        event::MouseEventKind::Up(event::MouseButton::Left)
+                    ) && t.mouse_protocol_mode()
+                        == vt100::MouseProtocolMode::None;
 
                     if should_open_url {
                         let col = mouse.column as i32 - term_area.x as i32;
@@ -580,12 +588,26 @@ fn check_pending_deletes(app: &mut App) -> bool {
                     app.deleting_hive_dir_names.remove(&d);
                 }
             }
+            for name in &result.deleted_nest_names {
+                let nest_id = app.items.iter().find_map(|item| match item {
+                    app::NavItem::Nest { nest, .. } if nest.name == *name => Some(nest.id.clone()),
+                    _ => None,
+                });
+                if let Some(id) = nest_id {
+                    app.deleting_nest_ids.remove(&id);
+                }
+            }
 
             let mut parts = Vec::new();
             if result.deleted_comb_names.len() == 1 {
                 parts.push(format!("Deleted '{}'", result.deleted_comb_names[0]));
             } else if !result.deleted_comb_names.is_empty() {
                 parts.push(format!("Deleted {} combs", result.deleted_comb_names.len()));
+            }
+            if result.deleted_nest_names.len() == 1 {
+                parts.push(format!("Deleted nest '{}'", result.deleted_nest_names[0]));
+            } else if !result.deleted_nest_names.is_empty() {
+                parts.push(format!("Deleted {} nests", result.deleted_nest_names.len()));
             }
             if result.deleted_hive_names.len() == 1 {
                 parts.push(format!("Deleted hive '{}'", result.deleted_hive_names[0]));
@@ -718,6 +740,7 @@ fn handle_key(
                     }
                 }
                 KeyCode::Char('n') => app.start_new_comb(),
+                KeyCode::Char('N') => app.start_new_nest(),
                 KeyCode::Char('r') => app.start_rename_comb(),
                 KeyCode::Char('f') => app.start_comb_finder(),
                 KeyCode::Char('m') => app.start_move_comb(),
@@ -1010,7 +1033,7 @@ fn handle_delete_mode(
         KeyCode::Enter => {
             let targets = app.selected_delete_targets();
             if targets.is_empty() {
-                app.status_message = Some("No combs selected for delete".to_string());
+                app.status_message = Some("No items selected for delete".to_string());
             } else {
                 app.mode = AppMode::Normal;
                 start_async_delete(app, targets)?;
@@ -1172,9 +1195,23 @@ fn handle_moving_comb(
         KeyCode::Char('m') | KeyCode::Enter => {
             // Confirm: save the new order to disk
             let mode = std::mem::replace(&mut app.mode, AppMode::Normal);
-            if let AppMode::MovingComb { hive_dir_name, .. } = mode {
+            if let AppMode::MovingComb {
+                hive_dir_name,
+                moving_comb_id,
+                ..
+            } = mode
+            {
                 let comb_ids = app.comb_order_for_hive(&hive_dir_name);
-                match reorder_combs(&app.beehive_dir, &hive_dir_name, &comb_ids) {
+                let nest_id = app.comb_nest_id(&moving_comb_id);
+                match reorder_combs(&app.beehive_dir, &hive_dir_name, &comb_ids).and_then(|_| {
+                    assign_comb_to_nest(
+                        &app.beehive_dir,
+                        &hive_dir_name,
+                        &moving_comb_id,
+                        nest_id.as_deref(),
+                    )
+                    .map(|_| ())
+                }) {
                     Ok(()) => {
                         app.status_message = Some("Order saved".to_string());
                     }
@@ -1245,8 +1282,10 @@ fn start_async_clone(
         branch: branch.clone(),
         path: comb_dir.to_string_lossy().to_string(),
         created_at: chrono_now(),
+        nest_id: None,
         panes: vec![],
         cloning: true,
+        operation: None,
     };
     state.combs.push(placeholder);
     save_hive_state(&app.beehive_dir, &hive_dir_name, &state)
@@ -1317,8 +1356,10 @@ fn start_async_copy(
         branch: String::new(), // filled in after copy
         path: comb_dir.to_string_lossy().to_string(),
         created_at: chrono_now(),
+        nest_id: None,
         panes: vec![],
         cloning: true,
+        operation: None,
     };
     state.combs.push(placeholder);
     save_hive_state(&app.beehive_dir, &hive_dir_name, &state)
@@ -1365,15 +1406,17 @@ fn delete_activity(targets: &[DeleteTarget]) -> String {
     if targets.len() == 1 {
         match &targets[0] {
             DeleteTarget::Comb { comb_name, .. } => format!("Deleting '{}'", comb_name),
+            DeleteTarget::Nest { nest_name, .. } => format!("Deleting nest '{}'", nest_name),
             DeleteTarget::Hive { repo_name, .. } => format!("Deleting hive '{}'", repo_name),
         }
     } else {
-        format!("Deleting {} combs", targets.len())
+        format!("Deleting {} items", targets.len())
     }
 }
 
 fn delete_targets_sync(beehive_dir: &str, targets: Vec<DeleteTarget>) -> DeleteResult {
     let mut deleted_comb_names = Vec::new();
+    let mut deleted_nest_names = Vec::new();
     let mut deleted_hive_names = Vec::new();
     let mut errors = Vec::new();
 
@@ -1412,6 +1455,14 @@ fn delete_targets_sync(beehive_dir: &str, targets: Vec<DeleteTarget>) -> DeleteR
 
                 deleted_comb_names.push(comb_name);
             }
+            DeleteTarget::Nest {
+                hive_dir_name,
+                nest_id,
+                nest_name,
+            } => match delete_nest(beehive_dir, &hive_dir_name, &nest_id) {
+                Ok(nest) => deleted_nest_names.push(nest.name),
+                Err(e) => errors.push(format!("Failed to delete nest '{}': {}", nest_name, e)),
+            },
             DeleteTarget::Hive {
                 dir_name,
                 repo_name,
@@ -1431,6 +1482,7 @@ fn delete_targets_sync(beehive_dir: &str, targets: Vec<DeleteTarget>) -> DeleteR
 
     DeleteResult {
         deleted_comb_names,
+        deleted_nest_names,
         deleted_hive_names,
         errors,
     }
@@ -1450,6 +1502,9 @@ fn start_async_delete(
             DeleteTarget::Comb { comb_id, .. } => {
                 app.deleting_comb_ids.insert(comb_id.clone());
                 app.remove_terminal(comb_id);
+            }
+            DeleteTarget::Nest { nest_id, .. } => {
+                app.deleting_nest_ids.insert(nest_id.clone());
             }
             DeleteTarget::Hive { dir_name, .. } => {
                 app.deleting_hive_dir_names.insert(dir_name.clone());
@@ -1504,8 +1559,10 @@ mod tests {
             branch: branch.to_string(),
             path: format!("/tmp/{}", name),
             created_at: "0".to_string(),
+            nest_id: None,
             panes: vec![],
             cloning: false,
+            operation: None,
         }
     }
 
@@ -1528,6 +1585,7 @@ mod tests {
             sidebar_width: 28,
             comb_startup_command: None,
             deleting_comb_ids: HashSet::new(),
+            deleting_nest_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
             startup_applied_comb_ids: HashSet::new(),
             keyboard_enhanced: false,
@@ -1596,6 +1654,7 @@ mod tests {
         app.mode = AppMode::DeleteCombSelection {
             hive_dir_name: "repo_api".to_string(),
             selected_comb_ids: HashSet::new(),
+            selected_nest_ids: HashSet::new(),
         };
 
         handle_delete_mode(&mut app, crossterm::event::KeyEvent::from(KeyCode::Enter)).unwrap();
@@ -1603,7 +1662,7 @@ mod tests {
         assert!(matches!(app.mode, AppMode::DeleteCombSelection { .. }));
         assert_eq!(
             app.status_message.as_deref(),
-            Some("No combs selected for delete")
+            Some("No items selected for delete")
         );
     }
 
@@ -1626,6 +1685,7 @@ mod tests {
         app.mode = AppMode::DeleteCombSelection {
             hive_dir_name: "repo_api".to_string(),
             selected_comb_ids: HashSet::new(),
+            selected_nest_ids: HashSet::new(),
         };
 
         handle_delete_mode(
@@ -1807,15 +1867,21 @@ fn handle_input_submit(
                 }
                 app.refresh();
             }
-            InputAction::RenameCombName {
-                hive_dir_name,
-                comb_id,
-                current_name,
-            } => {
-                match rename_comb(&app.beehive_dir, &hive_dir_name, &comb_id, &value) {
-                    Ok(comb) => {
-                        app.status_message =
-                            Some(format!("Renamed '{}' to '{}'", current_name, comb.name));
+            InputAction::NewNestName { hive_dir_name } => {
+                match create_nest(&app.beehive_dir, &hive_dir_name, &value) {
+                    Ok(nest) => {
+                        app.status_message = Some(format!("Created nest '{}'", nest.name));
+                        app.refresh();
+                    }
+                    Err(e) => {
+                        app.status_message = Some(e);
+                    }
+                }
+            }
+            InputAction::RenameSelected { target } => {
+                match target.apply(&app.beehive_dir, &value) {
+                    Ok(message) => {
+                        app.status_message = Some(message);
                         app.refresh();
                     }
                     Err(e) => {
@@ -1862,6 +1928,20 @@ fn handle_confirm(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                     vec![DeleteTarget::Hive {
                         dir_name,
                         repo_name,
+                    }],
+                )?;
+            }
+            ConfirmAction::DeleteNest {
+                hive_dir_name,
+                nest_id,
+                nest_name,
+            } => {
+                start_async_delete(
+                    app,
+                    vec![DeleteTarget::Nest {
+                        hive_dir_name,
+                        nest_id,
+                        nest_name,
                     }],
                 )?;
             }
@@ -2068,6 +2148,7 @@ fn add_hive(beehive_dir: &str, url: &str) -> Result<String, String> {
     };
     let state = HiveState {
         info,
+        nests: vec![],
         combs: vec![],
     };
     let json = serde_json::to_string_pretty(&state).map_err(|e| format!("Serialize: {}", e))?;

@@ -30,6 +30,13 @@ interface UseSortableReturn<T extends SortableItem> {
   items: T[];
 }
 
+interface ReorderMeta {
+  from: number;
+  to: number;
+  movedId: string;
+  clientY: number;
+}
+
 const DEFAULT_THRESHOLD = 5;
 const DEFAULT_TRANSITION = "transform 200ms cubic-bezier(0.2, 0, 0, 1)";
 
@@ -42,7 +49,7 @@ function reorder<T>(list: T[], from: number, to: number): T[] {
 
 export function useSortable<T extends SortableItem>(
   items: T[],
-  onReorder: (ids: string[]) => void,
+  onReorder: (ids: string[], meta: ReorderMeta) => void,
   options?: UseSortableOptions,
 ): UseSortableReturn<T> {
   const threshold = options?.threshold ?? DEFAULT_THRESHOLD;
@@ -136,12 +143,18 @@ export function useSortable<T extends SortableItem>(
       }
     }
 
-    function onPointerUp() {
+    function onPointerUp(e: PointerEvent) {
       const ds = dragRef.current;
       if (!ds) return;
-      if (ds.activated && ds.dragIndex !== ds.overIndex) {
+      if (ds.activated) {
         const reordered = reorder(itemsRef.current, ds.dragIndex, ds.overIndex);
-        onReorder(reordered.map((item) => item.id));
+        const movedItem = itemsRef.current[ds.dragIndex];
+        onReorder(reordered.map((item) => item.id), {
+          from: ds.dragIndex,
+          to: ds.overIndex,
+          movedId: movedItem.id,
+          clientY: e.clientY,
+        });
       }
       setDragState(null);
       pointerStartRef.current = null;

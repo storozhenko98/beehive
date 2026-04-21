@@ -7,12 +7,18 @@ const steps = [
   },
   {
     number: 2,
-    title: "Create a Comb",
+    title: "Organize with Nests",
     description:
-      "Clone the repo to an isolated directory on any branch you choose.",
+      "Create optional nest groups inside a hive to keep related combs together.",
   },
   {
     number: 3,
+    title: "Create a Comb",
+    description:
+      "Clone the repo to an isolated directory on any branch you choose, then place it where it belongs.",
+  },
+  {
+    number: 4,
     title: "Open Panes",
     description:
       "Launch terminals and agents side-by-side. Work on multiple tasks at once.",
@@ -26,7 +32,7 @@ export function HowItWorks() {
         How it works
       </p>
       <h2 className="text-center text-4xl font-bold tracking-tight mb-12">
-        Three concepts, zero complexity
+        Four layers, still simple
       </h2>
       <div className="flex gap-6 max-w-[800px] mx-auto max-md:flex-col">
         {steps.map((step, i) => (

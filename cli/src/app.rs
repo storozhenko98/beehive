@@ -23,6 +23,7 @@ pub struct PendingClone {
 
 pub struct DeleteResult {
     pub deleted_comb_names: Vec<String>,
+    pub deleted_nest_names: Vec<String>,
     pub deleted_hive_names: Vec<String>,
     pub errors: Vec<String>,
 }
@@ -39,6 +40,11 @@ pub enum DeleteTarget {
         hive_dir_name: String,
         comb_id: String,
         comb_name: String,
+    },
+    Nest {
+        hive_dir_name: String,
+        nest_id: String,
+        nest_name: String,
     },
     Hive {
         dir_name: String,
@@ -59,6 +65,12 @@ pub enum NavItem {
         expanded: bool,
         comb_count: usize,
     },
+    Nest {
+        hive_dir_name: String,
+        nest: Nest,
+        expanded: bool,
+        comb_count: usize,
+    },
     Comb {
         hive_dir_name: String,
         comb: Comb,
@@ -68,6 +80,7 @@ pub enum NavItem {
 #[derive(Clone)]
 enum NavItemKey {
     Hive { dir_name: String },
+    Nest { hive_dir_name: String, id: String },
     Comb { id: String },
 }
 
@@ -164,6 +177,7 @@ pub enum AppMode {
     DeleteCombSelection {
         hive_dir_name: String,
         selected_comb_ids: HashSet<String>,
+        selected_nest_ids: HashSet<String>,
     },
     Help,
     Settings {
@@ -175,11 +189,12 @@ pub enum InputAction {
     NewCombName {
         hive_dir_name: String,
     },
-    AddHiveUrl,
-    RenameCombName {
+    NewNestName {
         hive_dir_name: String,
-        comb_id: String,
-        current_name: String,
+    },
+    AddHiveUrl,
+    RenameSelected {
+        target: RenameTarget,
     },
     CopyCombName {
         hive_dir_name: String,
@@ -187,6 +202,58 @@ pub enum InputAction {
         source_comb_name: String,
         source_comb_path: String,
     },
+}
+
+pub enum RenameTarget {
+    Comb {
+        hive_dir_name: String,
+        comb_id: String,
+        current_name: String,
+    },
+    Nest {
+        hive_dir_name: String,
+        nest_id: String,
+        current_name: String,
+    },
+}
+
+impl RenameTarget {
+    pub fn current_name(&self) -> &str {
+        match self {
+            Self::Comb { current_name, .. } | Self::Nest { current_name, .. } => current_name,
+        }
+    }
+
+    fn prompt(&self) -> String {
+        match self {
+            Self::Comb { current_name, .. } => format!("Rename '{}' to", current_name),
+            Self::Nest { current_name, .. } => format!("Rename nest '{}' to", current_name),
+        }
+    }
+
+    pub fn apply(&self, beehive_dir: &str, new_name: &str) -> Result<String, String> {
+        match self {
+            Self::Comb {
+                hive_dir_name,
+                comb_id,
+                current_name,
+            } => {
+                let comb = rename_comb(beehive_dir, hive_dir_name, comb_id, new_name)?;
+                Ok(format!("Renamed '{}' to '{}'", current_name, comb.name))
+            }
+            Self::Nest {
+                hive_dir_name,
+                nest_id,
+                current_name,
+            } => {
+                let nest = rename_nest(beehive_dir, hive_dir_name, nest_id, new_name)?;
+                Ok(format!(
+                    "Renamed nest '{}' to '{}'",
+                    current_name, nest.name
+                ))
+            }
+        }
+    }
 }
 
 pub enum ConfirmAction {
@@ -199,13 +266,18 @@ pub enum ConfirmAction {
         dir_name: String,
         repo_name: String,
     },
+    DeleteNest {
+        hive_dir_name: String,
+        nest_id: String,
+        nest_name: String,
+    },
     ResetConfig,
     Quit,
 }
 
 /// Raw data from a background refresh (list_hives + get_combs for each).
 pub struct RefreshResult {
-    pub hive_data: Vec<(HiveInfo, Vec<Comb>)>,
+    pub hive_data: Vec<(HiveInfo, Vec<Nest>, Vec<Comb>)>,
 }
 
 pub struct App {
@@ -228,6 +300,7 @@ pub struct App {
     pub sidebar_width: u16,
     pub comb_startup_command: Option<String>,
     pub deleting_comb_ids: HashSet<String>,
+    pub deleting_nest_ids: HashSet<String>,
     pub deleting_hive_dir_names: HashSet<String>,
     pub startup_applied_comb_ids: HashSet<String>,
     /// Whether the outer terminal supports the kitty keyboard enhancement protocol.
@@ -248,6 +321,14 @@ impl App {
             NavItem::Hive { info, .. } => NavItemKey::Hive {
                 dir_name: info.dir_name.clone(),
             },
+            NavItem::Nest {
+                hive_dir_name,
+                nest,
+                ..
+            } => NavItemKey::Nest {
+                hive_dir_name: hive_dir_name.clone(),
+                id: nest.id.clone(),
+            },
             NavItem::Comb { comb, .. } => NavItemKey::Comb {
                 id: comb.id.clone(),
             },
@@ -259,6 +340,17 @@ impl App {
             (NavItem::Hive { info, .. }, NavItemKey::Hive { dir_name }) => {
                 info.dir_name == *dir_name
             }
+            (
+                NavItem::Nest {
+                    hive_dir_name,
+                    nest,
+                    ..
+                },
+                NavItemKey::Nest {
+                    hive_dir_name: key_hive,
+                    id,
+                },
+            ) => hive_dir_name == key_hive && nest.id == *id,
             (NavItem::Comb { comb, .. }, NavItemKey::Comb { id }) => comb.id == *id,
             _ => false,
         })
@@ -323,8 +415,10 @@ impl App {
     pub fn delete_selection_count(&self) -> usize {
         match &self.mode {
             AppMode::DeleteCombSelection {
-                selected_comb_ids, ..
-            } => selected_comb_ids.len(),
+                selected_comb_ids,
+                selected_nest_ids,
+                ..
+            } => selected_comb_ids.len() + selected_nest_ids.len(),
             _ => 0,
         }
     }
@@ -338,11 +432,98 @@ impl App {
         }
     }
 
+    pub fn is_nest_marked_for_delete(&self, nest_id: &str) -> bool {
+        match &self.mode {
+            AppMode::DeleteCombSelection {
+                selected_nest_ids, ..
+            } => selected_nest_ids.contains(nest_id),
+            _ => false,
+        }
+    }
+
     fn find_hive_index(&self, hive_dir_name: &str) -> Option<usize> {
         self.items.iter().position(|item| match item {
             NavItem::Hive { info, .. } => info.dir_name == hive_dir_name,
             _ => false,
         })
+    }
+
+    fn find_nest_index(&self, hive_dir_name: &str, nest_id: &str) -> Option<usize> {
+        self.items.iter().position(|item| match item {
+            NavItem::Nest {
+                hive_dir_name: h,
+                nest,
+                ..
+            } => h == hive_dir_name && nest.id == nest_id,
+            _ => false,
+        })
+    }
+
+    fn previous_nest_expanded(
+        items: &[NavItem],
+        hive_dir_name: &str,
+        nest_id: &str,
+    ) -> Option<bool> {
+        items.iter().find_map(|item| match item {
+            NavItem::Nest {
+                hive_dir_name: h,
+                nest,
+                expanded,
+                ..
+            } if h == hive_dir_name && nest.id == nest_id => Some(*expanded),
+            _ => None,
+        })
+    }
+
+    fn hive_child_items(
+        existing_items: &[NavItem],
+        hive_dir_name: &str,
+        nests: Vec<Nest>,
+        combs: Vec<Comb>,
+        default_nest_expanded: bool,
+    ) -> Vec<NavItem> {
+        let mut items = Vec::new();
+        let nest_ids: HashSet<String> = nests.iter().map(|nest| nest.id.clone()).collect();
+
+        for comb in combs.iter().filter(|comb| {
+            comb.nest_id
+                .as_ref()
+                .is_none_or(|id| !nest_ids.contains(id))
+        }) {
+            items.push(NavItem::Comb {
+                hive_dir_name: hive_dir_name.to_string(),
+                comb: comb.clone(),
+            });
+        }
+
+        for nest in nests {
+            let expanded = Self::previous_nest_expanded(existing_items, hive_dir_name, &nest.id)
+                .unwrap_or(default_nest_expanded);
+            let nested_combs: Vec<Comb> = combs
+                .iter()
+                .filter(|comb| comb.nest_id.as_deref() == Some(nest.id.as_str()))
+                .cloned()
+                .collect();
+            let comb_count = nested_combs.iter().filter(|comb| !comb.cloning).count();
+
+            items.push(NavItem::Nest {
+                hive_dir_name: hive_dir_name.to_string(),
+                nest,
+                expanded,
+                comb_count,
+            });
+
+            if expanded {
+                for comb in nested_combs {
+                    items.push(NavItem::Comb {
+                        hive_dir_name: hive_dir_name.to_string(),
+                        comb,
+                    });
+                }
+            }
+        }
+
+        items
     }
 
     fn expand_hive_at(&mut self, hive_index: usize) -> Result<(), String> {
@@ -352,7 +533,7 @@ impl App {
                 expanded,
                 comb_count,
             } => (info.clone(), *expanded, *comb_count),
-            NavItem::Comb { .. } => return Ok(()),
+            NavItem::Nest { .. } | NavItem::Comb { .. } => return Ok(()),
         };
 
         if expanded {
@@ -365,12 +546,49 @@ impl App {
             comb_count,
         };
 
-        let combs = get_combs(&self.beehive_dir, &info.dir_name)?;
-        for (offset, comb) in combs.into_iter().enumerate() {
+        let state = load_hive_state_with_branches(&self.beehive_dir, &info.dir_name)?;
+        let children =
+            Self::hive_child_items(&self.items, &info.dir_name, state.nests, state.combs, true);
+        for (offset, child) in children.into_iter().enumerate() {
+            self.items.insert(hive_index + 1 + offset, child);
+        }
+
+        Ok(())
+    }
+
+    fn expand_nest_at(&mut self, nest_index: usize) -> Result<(), String> {
+        let (hive_dir_name, nest, expanded, comb_count) = match &self.items[nest_index] {
+            NavItem::Nest {
+                hive_dir_name,
+                nest,
+                expanded,
+                comb_count,
+            } => (hive_dir_name.clone(), nest.clone(), *expanded, *comb_count),
+            NavItem::Hive { .. } | NavItem::Comb { .. } => return Ok(()),
+        };
+
+        if expanded {
+            return Ok(());
+        }
+
+        self.items[nest_index] = NavItem::Nest {
+            hive_dir_name: hive_dir_name.clone(),
+            nest: nest.clone(),
+            expanded: true,
+            comb_count,
+        };
+
+        let state = load_hive_state_with_branches(&self.beehive_dir, &hive_dir_name)?;
+        let nested_combs = state
+            .combs
+            .into_iter()
+            .filter(|comb| comb.nest_id.as_deref() == Some(nest.id.as_str()));
+
+        for (offset, comb) in nested_combs.enumerate() {
             self.items.insert(
-                hive_index + 1 + offset,
+                nest_index + 1 + offset,
                 NavItem::Comb {
-                    hive_dir_name: info.dir_name.clone(),
+                    hive_dir_name: hive_dir_name.clone(),
                     comb,
                 },
             );
@@ -384,33 +602,58 @@ impl App {
             return Ok(true);
         }
 
+        let state = load_hive_state_with_branches(&self.beehive_dir, hive_dir_name).ok();
+        let nest_id = state.as_ref().and_then(|state| {
+            state
+                .combs
+                .iter()
+                .find(|comb| comb.id == comb_id)
+                .and_then(|comb| comb.nest_id.clone())
+        });
+
         let Some(hive_index) = self.find_hive_index(hive_dir_name) else {
             return Ok(false);
         };
 
         self.expand_hive_at(hive_index)?;
+        if self.select_comb_by_id(comb_id) {
+            return Ok(true);
+        }
+
+        if let Some(nest_id) = nest_id {
+            if let Some(nest_index) = self.find_nest_index(hive_dir_name, &nest_id) {
+                self.expand_nest_at(nest_index)?;
+            }
+        }
         Ok(self.select_comb_by_id(comb_id))
     }
 
-    fn first_deletable_comb_index_in_hive(&self, hive_dir_name: &str) -> Option<usize> {
-        self.items
-            .iter()
-            .enumerate()
-            .find_map(|(index, item)| match item {
-                NavItem::Comb {
-                    hive_dir_name: h,
-                    comb,
-                } if h == hive_dir_name
-                    && !comb.cloning
-                    && !self.deleting_comb_ids.contains(&comb.id) =>
-                {
-                    Some(index)
-                }
-                _ => None,
-            })
+    fn is_deletable_item_in_hive(&self, item: &NavItem, hive_dir_name: &str) -> bool {
+        match item {
+            NavItem::Comb {
+                hive_dir_name: h,
+                comb,
+            } => h == hive_dir_name && !comb.cloning && !self.deleting_comb_ids.contains(&comb.id),
+            NavItem::Nest {
+                hive_dir_name: h,
+                nest,
+                ..
+            } => h == hive_dir_name && !self.deleting_nest_ids.contains(&nest.id),
+            NavItem::Hive { .. } => false,
+        }
     }
 
-    fn adjacent_deletable_comb_index_in_hive(
+    fn first_deletable_item_index_in_hive(&self, hive_dir_name: &str) -> Option<usize> {
+        self.items.iter().enumerate().find_map(|(index, item)| {
+            if self.is_deletable_item_in_hive(item, hive_dir_name) {
+                Some(index)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn adjacent_deletable_item_index_in_hive(
         &self,
         hive_dir_name: &str,
         from: usize,
@@ -428,15 +671,11 @@ impl App {
                 (from + len - (step % len)) % len
             };
 
-            if matches!(
-                self.items.get(index),
-                Some(NavItem::Comb {
-                    hive_dir_name: h,
-                    comb,
-                }) if h == hive_dir_name
-                    && !comb.cloning
-                    && !self.deleting_comb_ids.contains(&comb.id)
-            ) {
+            if self
+                .items
+                .get(index)
+                .is_some_and(|item| self.is_deletable_item_in_hive(item, hive_dir_name))
+            {
                 return Some(index);
             }
         }
@@ -495,8 +734,20 @@ impl App {
             return;
         }
 
-        let (hive_dir_name, selected_comb_id) = match &self.items[self.selected] {
+        let selected_key = self.selected_item_key();
+        let (hive_dir_name, initial_key) = match &self.items[self.selected] {
             NavItem::Hive { info, .. } => (info.dir_name.clone(), None),
+            NavItem::Nest {
+                hive_dir_name,
+                nest,
+                ..
+            } => {
+                if self.deleting_nest_ids.contains(&nest.id) {
+                    self.status_message = Some("That nest is already being deleted".to_string());
+                    return;
+                }
+                (hive_dir_name.clone(), selected_key)
+            }
             NavItem::Comb {
                 hive_dir_name,
                 comb,
@@ -510,7 +761,7 @@ impl App {
                     self.status_message = Some("That comb is already being deleted".to_string());
                     return;
                 }
-                (hive_dir_name.clone(), Some(comb.id.clone()))
+                (hive_dir_name.clone(), selected_key)
             }
         };
 
@@ -524,23 +775,20 @@ impl App {
             return;
         }
 
-        let initial_index = selected_comb_id
+        let initial_index = initial_key
             .as_ref()
-            .and_then(|comb_id| {
-                self.items.iter().position(|item| {
-                    matches!(
-                        item,
-                        NavItem::Comb {
-                            hive_dir_name: h,
-                            comb,
-                        } if h == &hive_dir_name && comb.id == *comb_id && !comb.cloning
-                    )
+            .and_then(|key| {
+                Self::find_item_index(&self.items, key).filter(|index| {
+                    self.items
+                        .get(*index)
+                        .is_some_and(|item| self.is_deletable_item_in_hive(item, &hive_dir_name))
                 })
             })
-            .or_else(|| self.first_deletable_comb_index_in_hive(&hive_dir_name));
+            .or_else(|| self.first_deletable_item_index_in_hive(&hive_dir_name));
 
         let Some(initial_index) = initial_index else {
-            self.status_message = Some("No combs available to delete in this hive".to_string());
+            self.status_message =
+                Some("No combs or nests available to delete in this hive".to_string());
             return;
         };
 
@@ -548,13 +796,14 @@ impl App {
         self.enter_sidebar_mode(AppMode::DeleteCombSelection {
             hive_dir_name,
             selected_comb_ids: HashSet::new(),
+            selected_nest_ids: HashSet::new(),
         });
     }
 
     pub fn move_delete_selection_up(&mut self) {
         if let Some(hive_dir_name) = self.delete_mode_hive_dir_name().map(str::to_string) {
             if let Some(index) =
-                self.adjacent_deletable_comb_index_in_hive(&hive_dir_name, self.selected, false)
+                self.adjacent_deletable_item_index_in_hive(&hive_dir_name, self.selected, false)
             {
                 self.selected = index;
             }
@@ -564,7 +813,7 @@ impl App {
     pub fn move_delete_selection_down(&mut self) {
         if let Some(hive_dir_name) = self.delete_mode_hive_dir_name().map(str::to_string) {
             if let Some(index) =
-                self.adjacent_deletable_comb_index_in_hive(&hive_dir_name, self.selected, true)
+                self.adjacent_deletable_item_index_in_hive(&hive_dir_name, self.selected, true)
             {
                 self.selected = index;
             }
@@ -576,33 +825,58 @@ impl App {
             return;
         };
 
-        let selected_item = self.items.get(self.selected).cloned();
-        let Some(NavItem::Comb {
-            hive_dir_name: item_hive,
-            comb,
-        }) = selected_item
-        else {
-            self.status_message = Some("Select a comb to mark it for delete".to_string());
-            return;
-        };
+        match self.items.get(self.selected).cloned() {
+            Some(NavItem::Comb {
+                hive_dir_name: item_hive,
+                comb,
+            }) => {
+                if item_hive != hive_dir_name {
+                    self.status_message =
+                        Some("Delete mode only works within one hive at a time".to_string());
+                    return;
+                }
+                if comb.cloning {
+                    self.status_message =
+                        Some("Cannot delete a comb that is still in progress".to_string());
+                    return;
+                }
 
-        if item_hive != hive_dir_name {
-            self.status_message =
-                Some("Delete mode only works within one hive at a time".to_string());
-            return;
-        }
-        if comb.cloning {
-            self.status_message =
-                Some("Cannot delete a comb that is still in progress".to_string());
-            return;
-        }
+                if let AppMode::DeleteCombSelection {
+                    selected_comb_ids, ..
+                } = &mut self.mode
+                {
+                    if !selected_comb_ids.remove(&comb.id) {
+                        selected_comb_ids.insert(comb.id);
+                    }
+                }
+            }
+            Some(NavItem::Nest {
+                hive_dir_name: item_hive,
+                nest,
+                ..
+            }) => {
+                if item_hive != hive_dir_name {
+                    self.status_message =
+                        Some("Delete mode only works within one hive at a time".to_string());
+                    return;
+                }
+                if self.deleting_nest_ids.contains(&nest.id) {
+                    self.status_message = Some("That nest is already being deleted".to_string());
+                    return;
+                }
 
-        if let AppMode::DeleteCombSelection {
-            selected_comb_ids, ..
-        } = &mut self.mode
-        {
-            if !selected_comb_ids.remove(&comb.id) {
-                selected_comb_ids.insert(comb.id);
+                if let AppMode::DeleteCombSelection {
+                    selected_nest_ids, ..
+                } = &mut self.mode
+                {
+                    if !selected_nest_ids.remove(&nest.id) {
+                        selected_nest_ids.insert(nest.id);
+                    }
+                }
+            }
+            _ => {
+                self.status_message =
+                    Some("Select a comb or nest to mark it for delete".to_string());
             }
         }
     }
@@ -611,6 +885,7 @@ impl App {
         let AppMode::DeleteCombSelection {
             hive_dir_name,
             selected_comb_ids,
+            selected_nest_ids,
         } = &self.mode
         else {
             return vec![];
@@ -627,6 +902,17 @@ impl App {
                         hive_dir_name: h.clone(),
                         comb_id: comb.id.clone(),
                         comb_name: comb.name.clone(),
+                    })
+                }
+                NavItem::Nest {
+                    hive_dir_name: h,
+                    nest,
+                    ..
+                } if h == hive_dir_name && selected_nest_ids.contains(&nest.id) => {
+                    Some(DeleteTarget::Nest {
+                        hive_dir_name: h.clone(),
+                        nest_id: nest.id.clone(),
+                        nest_name: nest.name.clone(),
                     })
                 }
                 _ => None,
@@ -656,6 +942,7 @@ impl App {
                 .comb_startup_command
                 .filter(|cmd| !cmd.trim().is_empty()),
             deleting_comb_ids: HashSet::new(),
+            deleting_nest_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
             startup_applied_comb_ids: HashSet::new(),
             keyboard_enhanced,
@@ -686,7 +973,12 @@ impl App {
                 })
             };
 
-            let combs = get_combs(&self.beehive_dir, &dir_name).unwrap_or_default();
+            let state = load_hive_state_with_branches(&self.beehive_dir, &dir_name).ok();
+            let nests = state
+                .as_ref()
+                .map(|state| state.nests.clone())
+                .unwrap_or_default();
+            let combs = state.map(|state| state.combs).unwrap_or_default();
             let comb_count = combs.iter().filter(|c| !c.cloning).count();
 
             items.push(NavItem::Hive {
@@ -696,12 +988,13 @@ impl App {
             });
 
             if was_expanded {
-                for comb in combs {
-                    items.push(NavItem::Comb {
-                        hive_dir_name: dir_name.clone(),
-                        comb,
-                    });
-                }
+                items.extend(Self::hive_child_items(
+                    &self.items,
+                    &dir_name,
+                    nests,
+                    combs,
+                    true,
+                ));
             }
         }
 
@@ -719,7 +1012,7 @@ impl App {
     pub fn apply_refresh(&mut self, result: RefreshResult) {
         let mut items = vec![];
 
-        for (info, combs) in result.hive_data {
+        for (info, nests, combs) in result.hive_data {
             let dir_name = info.dir_name.clone();
             let was_expanded = self.items.iter().any(|item| {
                 matches!(item, NavItem::Hive { info: h, expanded: true, .. } if h.dir_name == dir_name)
@@ -734,12 +1027,13 @@ impl App {
             });
 
             if was_expanded {
-                for comb in combs {
-                    items.push(NavItem::Comb {
-                        hive_dir_name: dir_name.clone(),
-                        comb,
-                    });
-                }
+                items.extend(Self::hive_child_items(
+                    &self.items,
+                    &dir_name,
+                    nests,
+                    combs,
+                    true,
+                ));
             }
         }
 
@@ -780,25 +1074,74 @@ impl App {
                 };
 
                 if new_expanded {
-                    if let Ok(combs) = get_combs(&self.beehive_dir, &info.dir_name) {
+                    if let Ok(state) =
+                        load_hive_state_with_branches(&self.beehive_dir, &info.dir_name)
+                    {
                         let insert_pos = self.selected + 1;
-                        let mut offset = 0;
-                        for comb in combs {
-                            self.items.insert(
-                                insert_pos + offset,
-                                NavItem::Comb {
-                                    hive_dir_name: info.dir_name.clone(),
-                                    comb,
-                                },
-                            );
-                            offset += 1;
+                        let children = Self::hive_child_items(
+                            &self.items,
+                            &info.dir_name,
+                            state.nests,
+                            state.combs,
+                            true,
+                        );
+                        for (offset, child) in children.into_iter().enumerate() {
+                            self.items.insert(insert_pos + offset, child);
                         }
                     }
                 } else {
-                    let dir_name = &info.dir_name;
                     while self.selected + 1 < self.items.len() {
-                        if matches!(&self.items[self.selected + 1], NavItem::Comb { hive_dir_name, .. } if hive_dir_name == dir_name)
-                        {
+                        if matches!(&self.items[self.selected + 1], NavItem::Hive { .. }) {
+                            break;
+                        } else {
+                            self.items.remove(self.selected + 1);
+                        }
+                    }
+                }
+                None
+            }
+            NavItem::Nest {
+                hive_dir_name,
+                nest,
+                expanded,
+                comb_count,
+            } => {
+                let new_expanded = !expanded;
+                self.items[self.selected] = NavItem::Nest {
+                    hive_dir_name: hive_dir_name.clone(),
+                    nest: nest.clone(),
+                    expanded: new_expanded,
+                    comb_count,
+                };
+
+                if new_expanded {
+                    if let Ok(state) =
+                        load_hive_state_with_branches(&self.beehive_dir, &hive_dir_name)
+                    {
+                        let insert_pos = self.selected + 1;
+                        let nested_combs = state
+                            .combs
+                            .into_iter()
+                            .filter(|comb| comb.nest_id.as_deref() == Some(nest.id.as_str()));
+
+                        for (offset, comb) in nested_combs.enumerate() {
+                            self.items.insert(
+                                insert_pos + offset,
+                                NavItem::Comb {
+                                    hive_dir_name: hive_dir_name.clone(),
+                                    comb,
+                                },
+                            );
+                        }
+                    }
+                } else {
+                    while self.selected + 1 < self.items.len() {
+                        if matches!(
+                            &self.items[self.selected + 1],
+                            NavItem::Comb { hive_dir_name: h, comb }
+                                if h == &hive_dir_name
+                                    && comb.nest_id.as_deref() == Some(nest.id.as_str())
+                        ) {
                             self.items.remove(self.selected + 1);
                         } else {
                             break;
@@ -930,6 +1273,21 @@ impl App {
         }
     }
 
+    pub fn start_new_nest(&mut self) {
+        if let Some(dir_name) = self.selected_hive_dir() {
+            self.enter_sidebar_mode(AppMode::Input {
+                prompt: "Nest name".to_string(),
+                value: String::new(),
+                cursor: 0,
+                action: InputAction::NewNestName {
+                    hive_dir_name: dir_name,
+                },
+            });
+        } else {
+            self.status_message = Some("Add a hive first with 'a'".to_string());
+        }
+    }
+
     pub fn start_copy_comb(&mut self) {
         if self.items.is_empty() {
             return;
@@ -967,29 +1325,44 @@ impl App {
         if self.items.is_empty() {
             return;
         }
-        if let NavItem::Comb {
-            hive_dir_name,
-            comb,
-        } = &self.items[self.selected]
-        {
-            if comb.cloning {
-                self.status_message =
-                    Some("Cannot rename a comb that is still in progress".to_string());
-                return;
-            }
-            self.enter_sidebar_mode(AppMode::Input {
-                prompt: format!("Rename '{}' to", comb.name),
-                value: comb.name.clone(),
-                cursor: comb.name.len(),
-                action: InputAction::RenameCombName {
+        let target = match &self.items[self.selected] {
+            NavItem::Comb {
+                hive_dir_name,
+                comb,
+            } => {
+                if comb.cloning {
+                    self.status_message =
+                        Some("Cannot rename a comb that is still in progress".to_string());
+                    return;
+                }
+                RenameTarget::Comb {
                     hive_dir_name: hive_dir_name.clone(),
                     comb_id: comb.id.clone(),
                     current_name: comb.name.clone(),
-                },
-            });
-        } else {
-            self.status_message = Some("Select a comb to rename".to_string());
-        }
+                }
+            }
+            NavItem::Nest {
+                hive_dir_name,
+                nest,
+                ..
+            } => RenameTarget::Nest {
+                hive_dir_name: hive_dir_name.clone(),
+                nest_id: nest.id.clone(),
+                current_name: nest.name.clone(),
+            },
+            NavItem::Hive { .. } => {
+                self.status_message = Some("Select a comb or nest to rename".to_string());
+                return;
+            }
+        };
+
+        let value = target.current_name().to_string();
+        self.enter_sidebar_mode(AppMode::Input {
+            prompt: target.prompt(),
+            cursor: value.len(),
+            value,
+            action: InputAction::RenameSelected { target },
+        });
     }
 
     pub fn start_move_comb(&mut self) {
@@ -1025,22 +1398,53 @@ impl App {
             return false;
         }
         let prev = self.selected - 1;
-        // Only swap with another Comb from the same hive (not past a Hive header)
-        if let (
-            NavItem::Comb {
-                hive_dir_name: h1, ..
-            },
-            NavItem::Comb {
-                hive_dir_name: h2, ..
-            },
-        ) = (&self.items[self.selected], &self.items[prev])
-        {
-            if h1 == h2 {
+
+        let Some(NavItem::Comb {
+            hive_dir_name: selected_hive,
+            ..
+        }) = self.items.get(self.selected)
+        else {
+            return false;
+        };
+        let selected_hive = selected_hive.clone();
+
+        match self.items.get(prev) {
+            Some(NavItem::Comb {
+                hive_dir_name,
+                comb,
+            }) if hive_dir_name == &selected_hive => {
+                let destination_nest_id = comb.nest_id.clone();
                 self.items.swap(self.selected, prev);
+                self.selected = prev;
+                if let NavItem::Comb { comb, .. } = &mut self.items[self.selected] {
+                    comb.nest_id = destination_nest_id;
+                }
+                return true;
+            }
+            Some(NavItem::Nest { hive_dir_name, .. }) if hive_dir_name == &selected_hive => {
+                let destination_nest_id = if prev > 0 {
+                    match &self.items[prev - 1] {
+                        NavItem::Comb {
+                            hive_dir_name,
+                            comb,
+                        } if hive_dir_name == &selected_hive => comb.nest_id.clone(),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                let mut item = self.items.remove(self.selected);
+                if let NavItem::Comb { comb, .. } = &mut item {
+                    comb.nest_id = destination_nest_id;
+                }
+                self.items.insert(prev, item);
                 self.selected = prev;
                 return true;
             }
+            _ => {}
         }
+
         false
     }
 
@@ -1050,23 +1454,54 @@ impl App {
         if next >= self.items.len() {
             return false;
         }
-        // Only swap with another Comb from the same hive (not past a Hive header)
-        if let (
-            NavItem::Comb {
-                hive_dir_name: h1, ..
-            },
-            NavItem::Comb {
-                hive_dir_name: h2, ..
-            },
-        ) = (&self.items[self.selected], &self.items[next])
-        {
-            if h1 == h2 {
+
+        let Some(NavItem::Comb {
+            hive_dir_name: selected_hive,
+            ..
+        }) = self.items.get(self.selected)
+        else {
+            return false;
+        };
+        let selected_hive = selected_hive.clone();
+
+        match self.items.get(next) {
+            Some(NavItem::Comb {
+                hive_dir_name,
+                comb,
+            }) if hive_dir_name == &selected_hive => {
+                let destination_nest_id = comb.nest_id.clone();
                 self.items.swap(self.selected, next);
+                self.selected = next;
+                if let NavItem::Comb { comb, .. } = &mut self.items[self.selected] {
+                    comb.nest_id = destination_nest_id;
+                }
+                return true;
+            }
+            Some(NavItem::Nest {
+                hive_dir_name,
+                nest,
+                ..
+            }) if hive_dir_name == &selected_hive => {
+                let destination_nest_id = Some(nest.id.clone());
+                let mut item = self.items.remove(self.selected);
+                if let NavItem::Comb { comb, .. } = &mut item {
+                    comb.nest_id = destination_nest_id;
+                }
+                self.items.insert(next, item);
                 self.selected = next;
                 return true;
             }
+            _ => {}
         }
+
         false
+    }
+
+    pub fn comb_nest_id(&self, comb_id: &str) -> Option<String> {
+        self.items.iter().find_map(|item| match item {
+            NavItem::Comb { comb, .. } if comb.id == comb_id => comb.nest_id.clone(),
+            _ => None,
+        })
     }
 
     pub fn select_comb_by_id(&mut self, comb_id: &str) -> bool {
@@ -1083,7 +1518,8 @@ impl App {
 
     /// Extract the current comb ID order for a given hive from the flat items list.
     pub fn comb_order_for_hive(&self, hive_dir_name: &str) -> Vec<String> {
-        self.items
+        let visible_order: Vec<String> = self
+            .items
             .iter()
             .filter_map(|item| match item {
                 NavItem::Comb {
@@ -1091,6 +1527,24 @@ impl App {
                     comb,
                 } if h == hive_dir_name => Some(comb.id.clone()),
                 _ => None,
+            })
+            .collect();
+
+        let Ok(state) = load_hive_state(&self.beehive_dir, hive_dir_name) else {
+            return visible_order;
+        };
+
+        let visible_set: HashSet<String> = visible_order.iter().cloned().collect();
+        let mut visible_iter = visible_order.into_iter();
+        state
+            .combs
+            .into_iter()
+            .filter_map(|comb| {
+                if visible_set.contains(&comb.id) {
+                    visible_iter.next()
+                } else {
+                    Some(comb.id)
+                }
             })
             .collect()
     }
@@ -1135,6 +1589,20 @@ impl App {
                     },
                 });
             }
+            NavItem::Nest {
+                hive_dir_name,
+                nest,
+                ..
+            } => {
+                self.enter_sidebar_mode(AppMode::Confirm {
+                    message: format!("Delete nest '{}'?", nest.name),
+                    action: ConfirmAction::DeleteNest {
+                        hive_dir_name: hive_dir_name.clone(),
+                        nest_id: nest.id.clone(),
+                        nest_name: nest.name.clone(),
+                    },
+                });
+            }
         }
     }
 
@@ -1160,6 +1628,7 @@ impl App {
         }
         match &self.items[self.selected] {
             NavItem::Hive { info, .. } => Some(info.dir_name.clone()),
+            NavItem::Nest { hive_dir_name, .. } => Some(hive_dir_name.clone()),
             NavItem::Comb { hive_dir_name, .. } => Some(hive_dir_name.clone()),
         }
     }
@@ -1188,8 +1657,24 @@ mod tests {
             branch: branch.to_string(),
             path: format!("/tmp/{}", name),
             created_at: "0".to_string(),
+            nest_id: None,
             panes: vec![],
             cloning: false,
+            operation: None,
+        }
+    }
+
+    fn comb_with_nest(id: &str, name: &str, branch: &str, nest_id: &str) -> Comb {
+        Comb {
+            nest_id: Some(nest_id.to_string()),
+            ..comb(id, name, branch)
+        }
+    }
+
+    fn nest(id: &str, name: &str) -> Nest {
+        Nest {
+            id: id.to_string(),
+            name: name.to_string(),
         }
     }
 
@@ -1212,6 +1697,7 @@ mod tests {
             sidebar_width: 28,
             comb_startup_command: None,
             deleting_comb_ids: HashSet::new(),
+            deleting_nest_ids: HashSet::new(),
             deleting_hive_dir_names: HashSet::new(),
             startup_applied_comb_ids: HashSet::new(),
             keyboard_enhanced: false,
@@ -1295,6 +1781,7 @@ mod tests {
         app.apply_refresh(RefreshResult {
             hive_data: vec![(
                 hive("repo_api", "api"),
+                vec![],
                 vec![
                     comb("x", "aardvark", "main"),
                     comb("a", "alpha", "main"),
@@ -1307,6 +1794,107 @@ mod tests {
         match &app.items[app.selected] {
             NavItem::Comb { comb, .. } => assert_eq!(comb.id, "b"),
             _ => panic!("expected selected comb"),
+        }
+    }
+
+    #[test]
+    fn move_comb_up_allows_reorder_inside_same_nest() {
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 2,
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb_with_nest("a", "alpha", "main", "nest-1"),
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb_with_nest("b", "beta", "main", "nest-1"),
+                },
+            ],
+            2,
+        );
+
+        assert!(app.move_comb_up());
+
+        assert_eq!(app.selected, 1);
+        match &app.items[1] {
+            NavItem::Comb { comb, .. } => assert_eq!(comb.id, "b"),
+            _ => panic!("expected moved comb"),
+        }
+    }
+
+    #[test]
+    fn move_comb_up_crosses_nest_boundary() {
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 2,
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb_with_nest("a", "alpha", "main", "nest-1"),
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb_with_nest("b", "beta", "main", "nest-2"),
+                },
+            ],
+            2,
+        );
+
+        assert!(app.move_comb_up());
+
+        assert_eq!(app.selected, 1);
+        match &app.items[1] {
+            NavItem::Comb { comb, .. } => {
+                assert_eq!(comb.id, "b");
+                assert_eq!(comb.nest_id.as_deref(), Some("nest-1"));
+            }
+            _ => panic!("expected moved comb"),
+        }
+    }
+
+    #[test]
+    fn move_comb_down_crosses_into_next_nest() {
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 1,
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb("a", "alpha", "main"),
+                },
+                NavItem::Nest {
+                    hive_dir_name: "repo_api".to_string(),
+                    nest: Nest {
+                        id: "nest-1".to_string(),
+                        name: "Nest 1".to_string(),
+                    },
+                    expanded: true,
+                    comb_count: 0,
+                },
+            ],
+            1,
+        );
+
+        assert!(app.move_comb_down());
+
+        assert_eq!(app.selected, 2);
+        match &app.items[2] {
+            NavItem::Comb { comb, .. } => {
+                assert_eq!(comb.id, "a");
+                assert_eq!(comb.nest_id.as_deref(), Some("nest-1"));
+            }
+            _ => panic!("expected moved comb"),
         }
     }
 
@@ -1364,6 +1952,7 @@ mod tests {
         app.mode = AppMode::DeleteCombSelection {
             hive_dir_name: "repo_api".to_string(),
             selected_comb_ids: HashSet::from(["a".to_string(), "c".to_string()]),
+            selected_nest_ids: HashSet::new(),
         };
 
         let targets = app.selected_delete_targets();
@@ -1371,6 +1960,71 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert!(matches!(&targets[0], DeleteTarget::Comb { comb_id, .. } if comb_id == "a"));
         assert!(matches!(&targets[1], DeleteTarget::Comb { comb_id, .. } if comb_id == "c"));
+    }
+
+    #[test]
+    fn selected_delete_targets_include_marked_nests() {
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 1,
+                },
+                NavItem::Nest {
+                    hive_dir_name: "repo_api".to_string(),
+                    nest: nest("nest-1", "Work"),
+                    expanded: true,
+                    comb_count: 1,
+                },
+                NavItem::Comb {
+                    hive_dir_name: "repo_api".to_string(),
+                    comb: comb_with_nest("a", "alpha", "main", "nest-1"),
+                },
+            ],
+            1,
+        );
+        app.mode = AppMode::DeleteCombSelection {
+            hive_dir_name: "repo_api".to_string(),
+            selected_comb_ids: HashSet::new(),
+            selected_nest_ids: HashSet::from(["nest-1".to_string()]),
+        };
+
+        let targets = app.selected_delete_targets();
+
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(&targets[0], DeleteTarget::Nest { nest_id, .. } if nest_id == "nest-1"));
+    }
+
+    #[test]
+    fn toggle_delete_selection_marks_current_nest() {
+        let mut app = make_app(
+            vec![
+                NavItem::Hive {
+                    info: hive("repo_api", "api"),
+                    expanded: true,
+                    comb_count: 0,
+                },
+                NavItem::Nest {
+                    hive_dir_name: "repo_api".to_string(),
+                    nest: nest("nest-1", "Work"),
+                    expanded: true,
+                    comb_count: 0,
+                },
+            ],
+            1,
+        );
+        app.mode = AppMode::DeleteCombSelection {
+            hive_dir_name: "repo_api".to_string(),
+            selected_comb_ids: HashSet::new(),
+            selected_nest_ids: HashSet::new(),
+        };
+
+        app.toggle_delete_selection();
+        assert!(app.is_nest_marked_for_delete("nest-1"));
+
+        app.toggle_delete_selection();
+        assert!(!app.is_nest_marked_for_delete("nest-1"));
     }
 
     #[test]

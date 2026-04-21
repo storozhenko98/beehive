@@ -22,6 +22,12 @@ export function HelpScreen({ onBack, backLabel }: Props) {
               GitHub URL (HTTPS, SSH, or <code>owner/repo</code>).
             </li>
             <li>
+              <strong>Organize with nests</strong> — If you want structure,
+              use the <code>+ Nest</code> action in the COMBS header to create
+              groups like bugfixes, clients, or
+              experiments inside the hive.
+            </li>
+            <li>
               <strong>Create a workspace</strong> — Select your hive, click
               "+ New Comb", pick a name and branch. Beehive clones it into
               an isolated directory.
@@ -39,17 +45,26 @@ export function HelpScreen({ onBack, backLabel }: Props) {
           <div className="help-concept">
             <h3>Hives</h3>
             <p>
-              A hive is a registered GitHub repo. Add one per project you
-              work on. Beehive tracks it so you can spin up workspaces from it.
+              A hive is a registered GitHub repo. It is the top-level container
+              for everything you do in one project: nests, combs, and panes.
+            </p>
+          </div>
+
+          <div className="help-concept">
+            <h3>Nests</h3>
+            <p>
+              Nests are optional groups inside a hive. Use them to organize
+              related combs, like bugfixes, experiments, or client work,
+              without changing how the combs behave.
             </p>
           </div>
 
           <div className="help-concept">
             <h3>Combs</h3>
             <p>
-              Each comb is a full git clone on its own branch. You can have
-              multiple combs per hive — one per feature, bugfix, or experiment.
-              They're completely isolated from each other.
+              Each comb is a full git clone on its own branch. Combs can live
+              directly in a hive or inside a nest, and they stay completely
+              isolated from each other.
             </p>
           </div>
 
@@ -85,6 +100,10 @@ export function HelpScreen({ onBack, backLabel }: Props) {
             <li>
               You can duplicate a comb with the copy icon in the sidebar.
               This does a full <code>cp&nbsp;-r</code> including uncommitted work.
+            </li>
+            <li>
+              Use <code>+ Nest</code> to create a nest, then right-click a comb
+              and use <code>Add to Nest</code> to place it.
             </li>
             <li>
               Deleting a comb removes it from disk permanently. There is

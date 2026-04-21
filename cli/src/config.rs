@@ -39,6 +39,13 @@ pub struct CustomButton {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct Nest {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct HiveInfo {
     pub dir_name: String,
     pub repo_url: String,
@@ -69,15 +76,21 @@ pub struct Comb {
     pub path: String,
     pub created_at: String,
     #[serde(default)]
+    pub nest_id: Option<String>,
+    #[serde(default)]
     pub panes: Vec<PaneConfig>,
     #[serde(default)]
     pub cloning: bool,
+    #[serde(default)]
+    pub operation: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HiveState {
     pub info: HiveInfo,
+    #[serde(default)]
+    pub nests: Vec<Nest>,
     pub combs: Vec<Comb>,
 }
 
@@ -249,15 +262,27 @@ pub fn list_hives(beehive_dir: &str) -> Result<Vec<HiveInfo>, String> {
 }
 
 pub fn get_combs(beehive_dir: &str, dir_name: &str) -> Result<Vec<Comb>, String> {
+    Ok(load_hive_state_with_branches(beehive_dir, dir_name)?.combs)
+}
+
+pub fn load_hive_state_with_branches(
+    beehive_dir: &str,
+    dir_name: &str,
+) -> Result<HiveState, String> {
     let mut state = load_hive_state(beehive_dir, dir_name)?;
+    let mut changed = false;
     for comb in &mut state.combs {
         if let Some(branch) = get_git_branch(&comb.path) {
             if branch != comb.branch {
                 comb.branch = branch;
+                changed = true;
             }
         }
     }
-    Ok(state.combs)
+    if changed {
+        save_hive_state(beehive_dir, dir_name, &state)?;
+    }
+    Ok(state)
 }
 
 pub fn get_git_branch(path: &str) -> Option<String> {
@@ -320,6 +345,112 @@ pub fn reorder_combs(
     state.combs = ordered;
 
     save_hive_state(beehive_dir, hive_dir_name, &state)
+}
+
+pub fn create_nest(beehive_dir: &str, hive_dir_name: &str, name: &str) -> Result<Nest, String> {
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
+    validate_nest_name(name, &state.nests)?;
+
+    let nest = Nest {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: name.trim().to_string(),
+    };
+
+    state.nests.push(nest.clone());
+    save_hive_state(beehive_dir, hive_dir_name, &state)?;
+    Ok(nest)
+}
+
+pub fn assign_comb_to_nest(
+    beehive_dir: &str,
+    hive_dir_name: &str,
+    comb_id: &str,
+    nest_id: Option<&str>,
+) -> Result<Comb, String> {
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
+
+    if let Some(nest_id) = nest_id {
+        if !state.nests.iter().any(|nest| nest.id == nest_id) {
+            return Err(format!("Nest '{}' not found", nest_id));
+        }
+    }
+
+    let comb = state
+        .combs
+        .iter_mut()
+        .find(|comb| comb.id == comb_id)
+        .ok_or_else(|| "Comb not found".to_string())?;
+    comb.nest_id = nest_id.map(str::to_string);
+    let updated = comb.clone();
+
+    save_hive_state(beehive_dir, hive_dir_name, &state)?;
+    Ok(updated)
+}
+
+pub fn rename_nest(
+    beehive_dir: &str,
+    hive_dir_name: &str,
+    nest_id: &str,
+    new_name: &str,
+) -> Result<Nest, String> {
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
+    let existing_nests: Vec<Nest> = state
+        .nests
+        .iter()
+        .filter(|nest| nest.id != nest_id)
+        .cloned()
+        .collect();
+    validate_nest_name(new_name, &existing_nests)?;
+
+    let nest = state
+        .nests
+        .iter_mut()
+        .find(|nest| nest.id == nest_id)
+        .ok_or_else(|| "Nest not found".to_string())?;
+    nest.name = new_name.trim().to_string();
+    let updated = nest.clone();
+
+    save_hive_state(beehive_dir, hive_dir_name, &state)?;
+    Ok(updated)
+}
+
+pub fn delete_nest(beehive_dir: &str, hive_dir_name: &str, nest_id: &str) -> Result<Nest, String> {
+    let mut state = load_hive_state(beehive_dir, hive_dir_name)?;
+    let pos = state
+        .nests
+        .iter()
+        .position(|nest| nest.id == nest_id)
+        .ok_or_else(|| "Nest not found".to_string())?;
+    let deleted = state.nests.remove(pos);
+
+    for comb in &mut state.combs {
+        if comb.nest_id.as_deref() == Some(nest_id) {
+            comb.nest_id = None;
+        }
+    }
+
+    save_hive_state(beehive_dir, hive_dir_name, &state)?;
+    Ok(deleted)
+}
+
+fn validate_nest_name(name: &str, existing_nests: &[Nest]) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Nest name cannot be empty".to_string());
+    }
+    if trimmed.len() > 40 {
+        return Err("Nest name must be 40 characters or fewer".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("Nest name cannot contain control characters".to_string());
+    }
+    if existing_nests
+        .iter()
+        .any(|n| n.name.trim().eq_ignore_ascii_case(trimmed))
+    {
+        return Err(format!("A nest named '{}' already exists", trimmed));
+    }
+    Ok(())
 }
 
 pub fn rename_comb(
@@ -389,7 +520,9 @@ pub fn validate_comb_name(name: &str, existing_combs: &[Comb]) -> Result<(), Str
 }
 
 fn comb_path_basename(comb: &Comb) -> Option<&str> {
-    Path::new(&comb.path).file_name().and_then(|name| name.to_str())
+    Path::new(&comb.path)
+        .file_name()
+        .and_then(|name| name.to_str())
 }
 
 pub fn parse_repo_url(url: &str) -> Result<(String, String), String> {
@@ -489,6 +622,51 @@ mod tests {
     }
 
     #[test]
+    fn delete_nest_removes_nest_and_ungroups_combs() {
+        let beehive_dir = unique_temp_dir();
+        let hive_dir_name = "repo_demo";
+        let hive_dir = beehive_dir.join(hive_dir_name);
+        fs::create_dir_all(hive_dir.join(".hive")).unwrap();
+
+        let state = HiveState {
+            info: HiveInfo {
+                dir_name: hive_dir_name.to_string(),
+                repo_url: "https://example.com/repo.git".to_string(),
+                repo_name: "repo".to_string(),
+                owner: "owner".to_string(),
+                description: None,
+                default_branch: Some("main".to_string()),
+                custom_buttons: vec![],
+            },
+            nests: vec![Nest {
+                id: "nest-1".to_string(),
+                name: "Work".to_string(),
+            }],
+            combs: vec![Comb {
+                id: "comb-1".to_string(),
+                name: "alpha".to_string(),
+                branch: "main".to_string(),
+                path: hive_dir.join("alpha").to_string_lossy().to_string(),
+                created_at: "0".to_string(),
+                nest_id: Some("nest-1".to_string()),
+                panes: vec![],
+                cloning: false,
+                operation: None,
+            }],
+        };
+        save_hive_state(beehive_dir.to_str().unwrap(), hive_dir_name, &state).unwrap();
+
+        let deleted = delete_nest(beehive_dir.to_str().unwrap(), hive_dir_name, "nest-1").unwrap();
+
+        assert_eq!(deleted.name, "Work");
+        let saved = load_hive_state(beehive_dir.to_str().unwrap(), hive_dir_name).unwrap();
+        assert!(saved.nests.is_empty());
+        assert_eq!(saved.combs[0].nest_id, None);
+
+        let _ = fs::remove_dir_all(&beehive_dir);
+    }
+
+    #[test]
     fn rename_comb_updates_state_without_moving_directory() {
         let beehive_dir = unique_temp_dir();
         let hive_dir_name = "repo_demo";
@@ -509,20 +687,28 @@ mod tests {
                 default_branch: Some("main".to_string()),
                 custom_buttons: vec![],
             },
+            nests: vec![],
             combs: vec![Comb {
                 id: "comb-1".to_string(),
                 name: "alpha".to_string(),
                 branch: "main".to_string(),
                 path: old_dir.to_string_lossy().to_string(),
                 created_at: "0".to_string(),
+                nest_id: None,
                 panes: vec![],
                 cloning: false,
+                operation: None,
             }],
         };
         save_hive_state(beehive_dir.to_str().unwrap(), hive_dir_name, &state).unwrap();
 
-        let renamed =
-            rename_comb(beehive_dir.to_str().unwrap(), hive_dir_name, "comb-1", "beta").unwrap();
+        let renamed = rename_comb(
+            beehive_dir.to_str().unwrap(),
+            hive_dir_name,
+            "comb-1",
+            "beta",
+        )
+        .unwrap();
 
         assert_eq!(renamed.name, "beta");
         assert_eq!(renamed.path, old_dir.to_string_lossy().to_string());
@@ -553,19 +739,28 @@ mod tests {
                 default_branch: Some("main".to_string()),
                 custom_buttons: vec![],
             },
+            nests: vec![],
             combs: vec![Comb {
                 id: "comb-1".to_string(),
                 name: "alpha".to_string(),
                 branch: "main".to_string(),
                 path: old_dir.to_string_lossy().to_string(),
                 created_at: "0".to_string(),
+                nest_id: None,
                 panes: vec![],
                 cloning: false,
+                operation: None,
             }],
         };
         save_hive_state(beehive_dir.to_str().unwrap(), hive_dir_name, &state).unwrap();
 
-        rename_comb(beehive_dir.to_str().unwrap(), hive_dir_name, "comb-1", "beta").unwrap();
+        rename_comb(
+            beehive_dir.to_str().unwrap(),
+            hive_dir_name,
+            "comb-1",
+            "beta",
+        )
+        .unwrap();
 
         let saved = load_hive_state(beehive_dir.to_str().unwrap(), hive_dir_name).unwrap();
         let error = validate_comb_name("alpha", &saved.combs).unwrap_err();
