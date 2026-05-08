@@ -1467,6 +1467,17 @@ impl App {
         }
     }
 
+    pub fn restart_comb_terminal(&mut self, comb_id: &str, comb_path: &str) {
+        self.terminals.remove(comb_id);
+        self.opencode_terminal_ids.remove(comb_id);
+        self.opencode_attention.remove(comb_id);
+        self.startup_applied_comb_ids.remove(comb_id);
+        self.open_terminal(comb_id, comb_path);
+        if self.status_message.is_none() {
+            self.status_message = Some("Restarted comb terminal".to_string());
+        }
+    }
+
     pub fn drain_opencode_attention(&mut self) -> bool {
         let stale_opencode_ids = self
             .opencode_terminal_ids

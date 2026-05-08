@@ -759,8 +759,15 @@ fn handle_key(
                 KeyCode::Char('A') => app.start_create_fresh_hive(),
                 KeyCode::Char('d') => app.start_delete(),
                 KeyCode::Char('R') => {
-                    app.refresh();
-                    app.status_message = Some("Refreshed".to_string());
+                    if let Some((id, path)) = app.selected_comb_target() {
+                        if Path::new(&path).exists() {
+                            app.restart_comb_terminal(&id, &path);
+                        } else {
+                            app.status_message = Some("Dir not found".to_string());
+                        }
+                    } else {
+                        app.status_message = Some("Select a comb to restart".to_string());
+                    }
                 }
                 KeyCode::Char('s') => app.open_settings(),
                 KeyCode::Char('?') => app.open_help(),

@@ -685,6 +685,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" rename ", Style::default().fg(OVERLAY0)),
                         Span::styled("│", Style::default().fg(SURFACE1)),
                         Span::styled(
+                            " R",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" restart ", Style::default().fg(OVERLAY0)),
+                        Span::styled("│", Style::default().fg(SURFACE1)),
+                        Span::styled(
                             " f",
                             Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
                         ),
@@ -838,6 +844,10 @@ fn render_help(frame: &mut Frame) {
             Span::styled("Rename selected comb or nest", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  R        ", key_style),
+            Span::styled("Restart selected comb terminal", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  f        ", key_style),
             Span::styled("Find and jump to a comb", desc_style),
         ]),
@@ -860,10 +870,6 @@ fn render_help(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("  </>/H/L  ", key_style),
             Span::styled("Resize sidebar", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  R        ", key_style),
-            Span::styled("Refresh sidebar", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  s        ", key_style),
