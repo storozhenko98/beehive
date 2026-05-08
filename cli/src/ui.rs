@@ -181,6 +181,10 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                 "Press 'a' to add a repo",
                 Style::default().fg(OVERLAY0),
             )),
+            Line::from(Span::styled(
+                "Press 'A' to create one",
+                Style::default().fg(OVERLAY0),
+            )),
         ])
         .alignment(Alignment::Center)
         .style(Style::default().bg(MANTLE));
@@ -668,6 +672,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" add ", Style::default().fg(OVERLAY0)),
                     Span::styled("│", Style::default().fg(SURFACE1)),
                     Span::styled(
+                        " A",
+                        Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" create ", Style::default().fg(OVERLAY0)),
+                    Span::styled("│", Style::default().fg(SURFACE1)),
+                    Span::styled(
                         " d",
                         Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
                     ),
@@ -796,6 +806,10 @@ fn render_help(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("  a        ", key_style),
             Span::styled("Add hive (GitHub repo)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  A        ", key_style),
+            Span::styled("Create repo + first comb", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  d        ", key_style),

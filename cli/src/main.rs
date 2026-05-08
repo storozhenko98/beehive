@@ -746,6 +746,7 @@ fn handle_key(
                 KeyCode::Char('m') => app.start_move_comb(),
                 KeyCode::Char('c') => app.start_copy_comb(),
                 KeyCode::Char('a') => app.start_add_hive(),
+                KeyCode::Char('A') => app.start_create_fresh_hive(),
                 KeyCode::Char('d') => app.start_delete(),
                 KeyCode::Char('R') => {
                     app.refresh();
@@ -1863,6 +1864,23 @@ fn handle_input_submit(
 
                 match add_hive(&app.beehive_dir, &value) {
                     Ok(name) => app.status_message = Some(format!("Added '{}'", name)),
+                    Err(e) => app.status_message = Some(format!("Failed: {}", e)),
+                }
+                app.refresh();
+            }
+            InputAction::CreateFreshHiveRepo => {
+                app.status_message = Some("Creating repo...".to_string());
+                terminal.draw(|frame| {
+                    ui::render(frame, app);
+                })?;
+
+                match create_fresh_hive(&app.beehive_dir, &value, "", true, "main", "main") {
+                    Ok((hive, comb)) => {
+                        app.status_message = Some(format!(
+                            "Created '{}' with comb '{}'",
+                            hive.repo_name, comb.name
+                        ));
+                    }
                     Err(e) => app.status_message = Some(format!("Failed: {}", e)),
                 }
                 app.refresh();

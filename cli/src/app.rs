@@ -193,6 +193,7 @@ pub enum InputAction {
         hive_dir_name: String,
     },
     AddHiveUrl,
+    CreateFreshHiveRepo,
     RenameSelected {
         target: RenameTarget,
     },
@@ -1555,6 +1556,15 @@ impl App {
             value: String::new(),
             cursor: 0,
             action: InputAction::AddHiveUrl,
+        });
+    }
+
+    pub fn start_create_fresh_hive(&mut self) {
+        self.enter_sidebar_mode(AppMode::Input {
+            prompt: "New private repo (repo or owner/repo)".to_string(),
+            value: String::new(),
+            cursor: 0,
+            action: InputAction::CreateFreshHiveRepo,
         });
     }
 

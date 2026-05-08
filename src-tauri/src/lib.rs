@@ -34,6 +34,7 @@ pub fn run() {
             hive::load_beehive,
             hive::verify_repo,
             hive::create_hive,
+            hive::create_fresh_hive,
             hive::list_hives,
             hive::delete_hive,
             hive::delete_hive_start,

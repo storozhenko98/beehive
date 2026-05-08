@@ -82,6 +82,22 @@ input, select {
   transition: border-color 0.15s;
 }
 
+input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 16px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
 input:focus, select:focus {
   border-color: var(--accent);
 }

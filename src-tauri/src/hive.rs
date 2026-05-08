@@ -86,6 +86,13 @@ pub struct HiveOperationResult {
     pub error: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreshHiveResult {
+    pub hive: HiveInfo,
+    pub comb: Comb,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HiveState {
@@ -469,6 +476,88 @@ pub async fn create_hive(beehive_dir: String, repo_url: String) -> Result<HiveIn
     }
 
     Ok(info)
+}
+
+#[tauri::command]
+pub async fn create_fresh_hive(
+    beehive_dir: String,
+    repo_spec: String,
+    description: String,
+    private: bool,
+    comb_name: String,
+    branch: String,
+) -> Result<FreshHiveResult, String> {
+    let (owner, repo_name, normalized_repo_spec) = parse_new_repo_spec(&repo_spec)?;
+    let comb_name = comb_name.trim().to_string();
+    validate_comb_name(&comb_name, &[])?;
+    let branch = validate_initial_branch(&branch)?;
+    let description = description.trim().to_string();
+
+    let dir_name = format!("repo_{}", repo_name);
+    let hive_dir = Path::new(&beehive_dir).join(&dir_name);
+    if hive_dir.exists() {
+        return Err(format!(
+            "A local hive directory for '{}' already exists at {}",
+            repo_name,
+            hive_dir.to_string_lossy()
+        ));
+    }
+
+    let dot_hive = hive_dir.join(".hive");
+    let comb_dir = hive_dir.join(&comb_name);
+    fs::create_dir_all(&dot_hive).map_err(|e| format!("Failed to create .hive dir: {}", e))?;
+    fs::create_dir_all(&comb_dir).map_err(|e| format!("Failed to create comb dir: {}", e))?;
+
+    let cleanup_local = |error: String| -> String {
+        let _ = fs::remove_dir_all(&hive_dir);
+        error
+    };
+
+    init_fresh_comb_repo(&comb_dir, &repo_name, &description, &branch, &owner)
+        .map_err(&cleanup_local)?;
+
+    create_remote_from_comb(&comb_dir, &normalized_repo_spec, &description, private)
+        .map_err(&cleanup_local)?;
+
+    let repo_url = run_cmd_in_dir(
+        "git",
+        &["remote", "get-url", "origin"],
+        &comb_dir,
+        "Read remote",
+    )
+    .map_err(&cleanup_local)?;
+
+    run_cmd("git", &["ls-remote", "--heads", &repo_url]).map_err(|e| {
+        cleanup_local(format!(
+            "Created repository, but the configured remote is not accessible via git: {}",
+            e
+        ))
+    })?;
+
+    let mut info = hive_info_from_gh_repo(&normalized_repo_spec, &owner, &repo_name, repo_url)
+        .map_err(|e| cleanup_local(format!("Created repository, but failed to read it: {}", e)))?;
+    info.dir_name = dir_name.clone();
+
+    let comb = Comb {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: comb_name,
+        branch,
+        path: comb_dir.to_string_lossy().to_string(),
+        created_at: chrono_now(),
+        nest_id: None,
+        panes: vec![],
+        cloning: false,
+        operation: None,
+    };
+
+    let state = HiveState {
+        info: info.clone(),
+        nests: vec![],
+        combs: vec![comb.clone()],
+    };
+    save_hive_state(&beehive_dir, &info.dir_name, &state).map_err(cleanup_local)?;
+
+    Ok(FreshHiveResult { hive: info, comb })
 }
 
 #[tauri::command]
@@ -1579,6 +1668,256 @@ pub async fn cli_status() -> Result<CliStatusResult, String> {
 }
 
 // --- helpers ---
+
+fn command_failure(action: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if stderr.is_empty() { stdout } else { stderr };
+    if detail.is_empty() {
+        format!("{} failed", action)
+    } else {
+        format!(
+            "{} failed: {}",
+            action,
+            detail.lines().next().unwrap_or("unknown error")
+        )
+    }
+}
+
+fn run_cmd_in_dir(cmd: &str, args: &[&str], dir: &Path, action: &str) -> Result<String, String> {
+    let output = cmd_with_path(cmd)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("{} failed: {}", action, e))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(command_failure(action, &output))
+    }
+}
+
+fn gh_current_login() -> Result<String, String> {
+    run_cmd("gh", &["api", "user", "--jq", ".login"])
+        .map_err(|e| format!("Failed to determine GitHub user: {}", e))
+}
+
+fn validate_github_owner(owner: &str) -> Result<(), String> {
+    if owner.is_empty() {
+        return Err("Owner cannot be empty".to_string());
+    }
+    if !owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("Owner can only contain letters, numbers, and hyphens".to_string());
+    }
+    Ok(())
+}
+
+fn validate_github_repo_name(repo_name: &str) -> Result<(), String> {
+    if repo_name.is_empty() {
+        return Err("Repository name cannot be empty".to_string());
+    }
+    if repo_name == "." || repo_name == ".." {
+        return Err("Repository name is reserved".to_string());
+    }
+    if repo_name.len() > 100 {
+        return Err("Repository name must be 100 characters or fewer".to_string());
+    }
+    if !repo_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(
+            "Repository name can only contain letters, numbers, hyphens, underscores, and dots"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn parse_new_repo_spec(repo_spec: &str) -> Result<(String, String, String), String> {
+    let cleaned = repo_spec
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    if cleaned.is_empty() {
+        return Err("Repository name cannot be empty".to_string());
+    }
+
+    let (owner, repo_name) = if cleaned.starts_with("git@") || cleaned.contains("github.com/") {
+        parse_repo_url(cleaned)?
+    } else {
+        let parts: Vec<&str> = cleaned.split('/').collect();
+        match parts.as_slice() {
+            [repo] => (gh_current_login()?, (*repo).to_string()),
+            [owner, repo] => ((*owner).to_string(), (*repo).to_string()),
+            _ => return Err("Use a repository name or owner/repo for new repositories".to_string()),
+        }
+    };
+
+    validate_github_owner(&owner)?;
+    validate_github_repo_name(&repo_name)?;
+
+    Ok((
+        owner.clone(),
+        repo_name.clone(),
+        format!("{}/{}", owner, repo_name),
+    ))
+}
+
+fn validate_initial_branch(branch: &str) -> Result<String, String> {
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return Err("Branch name cannot be empty".to_string());
+    }
+    if branch.starts_with('-')
+        || branch.contains("..")
+        || branch.ends_with(".lock")
+        || branch.chars().any(|c| c.is_whitespace())
+        || branch
+            .chars()
+            .any(|c| matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
+    {
+        return Err("Branch name is not valid for git".to_string());
+    }
+    Ok(branch.to_string())
+}
+
+fn ensure_local_git_identity(dir: &Path, fallback_owner: &str) -> Result<(), String> {
+    let login = gh_current_login().unwrap_or_else(|_| fallback_owner.to_string());
+
+    let needs_name = run_cmd_in_dir("git", &["config", "user.name"], dir, "Read git user.name")
+        .map(|name| name.trim().is_empty())
+        .unwrap_or(true);
+    if needs_name {
+        run_cmd_in_dir(
+            "git",
+            &["config", "user.name", &login],
+            dir,
+            "Set git user.name",
+        )?;
+    }
+
+    let needs_email = run_cmd_in_dir("git", &["config", "user.email"], dir, "Read git user.email")
+        .map(|email| email.trim().is_empty())
+        .unwrap_or(true);
+    if needs_email {
+        let email = format!("{}@users.noreply.github.com", login);
+        run_cmd_in_dir(
+            "git",
+            &["config", "user.email", &email],
+            dir,
+            "Set git user.email",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn init_fresh_comb_repo(
+    comb_dir: &Path,
+    repo_name: &str,
+    description: &str,
+    branch: &str,
+    fallback_owner: &str,
+) -> Result<(), String> {
+    run_cmd_in_dir("git", &["init"], comb_dir, "Initialize git repository")?;
+    run_cmd_in_dir(
+        "git",
+        &["checkout", "-b", branch],
+        comb_dir,
+        "Create branch",
+    )?;
+    ensure_local_git_identity(comb_dir, fallback_owner)?;
+
+    let mut readme = format!("# {}\n", repo_name);
+    if !description.is_empty() {
+        readme.push('\n');
+        readme.push_str(description);
+        readme.push('\n');
+    }
+    fs::write(comb_dir.join("README.md"), readme)
+        .map_err(|e| format!("Failed to write README.md: {}", e))?;
+
+    run_cmd_in_dir("git", &["add", "README.md"], comb_dir, "Stage README")?;
+    run_cmd_in_dir(
+        "git",
+        &["commit", "-m", "Initial commit"],
+        comb_dir,
+        "Create initial commit",
+    )?;
+    Ok(())
+}
+
+fn create_remote_from_comb(
+    comb_dir: &Path,
+    repo_spec: &str,
+    description: &str,
+    private: bool,
+) -> Result<(), String> {
+    let visibility = if private { "--private" } else { "--public" };
+    let mut cmd = cmd_with_path("gh");
+    cmd.env("GH_PROMPT_DISABLED", "1")
+        .current_dir(comb_dir)
+        .args([
+            "repo", "create", repo_spec, visibility, "--source", ".", "--remote", "origin",
+            "--push",
+        ]);
+    if !description.is_empty() {
+        cmd.args(["--description", description]);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Create GitHub repository failed: {}", e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure("Create GitHub repository", &output))
+    }
+}
+
+fn hive_info_from_gh_repo(
+    repo_spec: &str,
+    fallback_owner: &str,
+    fallback_repo_name: &str,
+    repo_url: String,
+) -> Result<HiveInfo, String> {
+    let json_output = run_cmd(
+        "gh",
+        &[
+            "repo",
+            "view",
+            repo_spec,
+            "--json",
+            "name,owner,description,defaultBranchRef",
+        ],
+    )?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&json_output)
+        .map_err(|e| format!("Failed to parse gh output: {}", e))?;
+    let repo_name = parsed["name"]
+        .as_str()
+        .unwrap_or(fallback_repo_name)
+        .to_string();
+    let owner = parsed["owner"]["login"]
+        .as_str()
+        .unwrap_or(fallback_owner)
+        .to_string();
+    let description = parsed["description"].as_str().map(|s| s.to_string());
+    let default_branch = parsed["defaultBranchRef"]["name"]
+        .as_str()
+        .map(|s| s.to_string());
+
+    Ok(HiveInfo {
+        dir_name: format!("repo_{}", repo_name),
+        repo_url,
+        repo_name,
+        owner,
+        description,
+        default_branch,
+        custom_buttons: vec![],
+    })
+}
 
 fn parse_repo_url(url: &str) -> Result<(String, String), String> {
     // Handle: git@github.com:owner/repo.git
