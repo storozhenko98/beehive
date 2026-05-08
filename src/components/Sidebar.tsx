@@ -293,12 +293,19 @@ function SortableCombSection({
         const canInteract = !hasOperation;
         const canCopy = canInteract && !isDeleting;
         const canRename = canInteract && !isDeleting;
+        const attentionLabel = comb.attention === "input"
+          ? "Needs input"
+          : comb.attention === "idle"
+          ? "Ready"
+          : comb.attention === "error"
+          ? "Error"
+          : null;
 
         return (
           <div
             key={comb.id}
             ref={ref}
-            className={`sidebar-comb-item ${comb.id === activeCombId ? "active" : ""} ${hasOperation ? "has-operation" : ""} ${isDeleting ? "deleting" : ""} ${isDragged ? "dragging" : ""}`}
+            className={`sidebar-comb-item ${comb.id === activeCombId ? "active" : ""} ${hasOperation ? "has-operation" : ""} ${isDeleting ? "deleting" : ""} ${isDragged ? "dragging" : ""} ${comb.attention ? `attention-${comb.attention}` : ""}`}
             style={style}
             onPointerDown={(e) => {
               if (canInteract && editingCombId !== comb.id) onPointerDown(e);
@@ -372,7 +379,10 @@ function SortableCombSection({
                   {operationText ? (
                     <span className="sidebar-comb-operation">{operationText}</span>
                   ) : (
-                    <span className="sidebar-comb-branch">{comb.branch}</span>
+                    <span className="sidebar-comb-branch">
+                      {comb.branch}
+                      {attentionLabel && <span className="sidebar-comb-attention">{attentionLabel}</span>}
+                    </span>
                   )}
                 </>
               )}

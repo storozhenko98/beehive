@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{filter_comb_finder_targets, App, AppMode, Focus, NavItem},
+    app::{filter_comb_finder_targets, App, AppMode, Focus, NavItem, OpenCodeAttentionKind},
     fuzzy::fuzzy_filter_strings,
 };
 
@@ -371,23 +371,51 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 
                     let has_terminal = app.terminals.contains_key(&comb.id);
 
-                    let (marker, marker_color) = if is_active {
-                        ("▶ ", GREEN)
-                    } else if has_terminal {
-                        ("● ", BLUE)
-                    } else {
-                        ("  ", MANTLE)
+                    let attention = app.opencode_attention.get(&comb.id);
+                    let (attention_text, attention_color) = match attention {
+                        Some(OpenCodeAttentionKind::Input) => (Some(" needs input"), YELLOW),
+                        Some(OpenCodeAttentionKind::Idle) => (Some(" ready"), GREEN),
+                        Some(OpenCodeAttentionKind::Error) => (Some(" error"), RED),
+                        _ => (None, SURFACE1),
                     };
-                    let name_color = if is_active { GREEN } else { TEXT };
 
-                    ListItem::new(Line::from(vec![
+                    let (marker, marker_color) =
+                        if matches!(attention, Some(OpenCodeAttentionKind::Input)) {
+                            ("! ", YELLOW)
+                        } else if matches!(attention, Some(OpenCodeAttentionKind::Error)) {
+                            ("! ", RED)
+                        } else if matches!(attention, Some(OpenCodeAttentionKind::Idle)) {
+                            ("● ", GREEN)
+                        } else if is_active {
+                            ("▶ ", GREEN)
+                        } else if has_terminal {
+                            ("● ", BLUE)
+                        } else {
+                            ("  ", MANTLE)
+                        };
+                    let name_color = if matches!(attention, Some(OpenCodeAttentionKind::Input)) {
+                        YELLOW
+                    } else if matches!(attention, Some(OpenCodeAttentionKind::Error)) {
+                        RED
+                    } else if is_active {
+                        GREEN
+                    } else {
+                        TEXT
+                    };
+
+                    let mut spans = vec![
                         Span::styled(
                             format!("{}{}", indent, marker),
                             Style::default().fg(marker_color),
                         ),
                         Span::styled(comb.name.clone(), Style::default().fg(name_color)),
                         Span::styled(format!(" {}", comb.branch), Style::default().fg(SURFACE1)),
-                    ]))
+                    ];
+                    if let Some(text) = attention_text {
+                        spans.push(Span::styled(text, Style::default().fg(attention_color)));
+                    }
+
+                    ListItem::new(Line::from(spans))
                 }
             }
         })
@@ -645,6 +673,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" copy ", Style::default().fg(OVERLAY0)),
                         Span::styled("│", Style::default().fg(SURFACE1)),
                         Span::styled(
+                            " o",
+                            Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" opencode ", Style::default().fg(OVERLAY0)),
+                        Span::styled("│", Style::default().fg(SURFACE1)),
+                        Span::styled(
                             " r",
                             Style::default().fg(LAVENDER).add_modifier(Modifier::BOLD),
                         ),
@@ -794,6 +828,10 @@ fn render_help(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("  c        ", key_style),
             Span::styled("Copy comb (duplicate workspace)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  o        ", key_style),
+            Span::styled("Open OpenCode and watch for attention", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  r        ", key_style),

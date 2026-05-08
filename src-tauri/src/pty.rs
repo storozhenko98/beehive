@@ -1,10 +1,17 @@
 use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader};
 use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
+use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
+
+const OPENCODE_SENTINEL: &str = "__beehive_opencode__";
 
 pub struct PtySession {
     master: Arc<std::sync::Mutex<Box<dyn MasterPty + Send>>>,
@@ -49,6 +56,156 @@ fn startup_wrapper_script() -> &'static str {
     "eval \"$BEEHIVE_STARTUP_COMMAND\"\nexec \"$SHELL\" -l"
 }
 
+fn opencode_wrapper_script(port: u16) -> String {
+    format!("opencode --hostname 127.0.0.1 --port {}\nexec \"$SHELL\" -l", port)
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeAttentionEvent {
+    pub attention_key: String,
+    pub status: String,
+    pub event_type: String,
+}
+
+fn reserve_local_port() -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("Failed to reserve OpenCode port: {}", e))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to read OpenCode port: {}", e))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+fn json_event_type(data: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    value
+        .get("type")
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn classify_opencode_event(event_type: &str, data: &str) -> Option<&'static str> {
+    match event_type {
+        "permission.asked" | "question.asked" => Some("input"),
+        "permission.replied" | "question.replied" | "question.rejected" => Some("clear"),
+        "session.error" => Some("error"),
+        "session.idle" => Some("idle"),
+        "session.status" => {
+            let value: Value = serde_json::from_str(data).ok()?;
+            let status_type = value
+                .pointer("/properties/status/type")
+                .or_else(|| value.pointer("/status/type"))
+                .and_then(Value::as_str);
+            match status_type {
+                Some("idle") => Some("idle"),
+                Some("busy") | Some("retry") => Some("clear"),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn emit_opencode_attention(app: &AppHandle, attention_key: &str, status: &str, event_type: &str) {
+    let _ = app.emit(
+        "opencode-attention",
+        OpenCodeAttentionEvent {
+            attention_key: attention_key.to_string(),
+            status: status.to_string(),
+            event_type: event_type.to_string(),
+        },
+    );
+}
+
+fn start_opencode_event_listener(app: AppHandle, attention_key: String, port: u16) {
+    std::thread::spawn(move || {
+        let mut stream = None;
+        for _ in 0..300 {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+
+        let Some(mut stream) = stream else {
+            emit_opencode_attention(
+                &app,
+                &attention_key,
+                "error",
+                "beehive.opencode.connect_failed",
+            );
+            return;
+        };
+
+        let request = format!(
+            "GET /event HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n",
+            port
+        );
+        if stream.write_all(request.as_bytes()).is_err() {
+            emit_opencode_attention(
+                &app,
+                &attention_key,
+                "error",
+                "beehive.opencode.subscribe_failed",
+            );
+            return;
+        }
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => return,
+                Ok(_) if line == "\r\n" || line == "\n" => break,
+                Ok(_) => continue,
+                Err(_) => return,
+            }
+        }
+
+        let mut event_name: Option<String> = None;
+        let mut data = String::new();
+        loop {
+            line.clear();
+            let read = match reader.read_line(&mut line) {
+                Ok(read) => read,
+                Err(_) => return,
+            };
+            if read == 0 {
+                return;
+            }
+
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                if !data.is_empty() {
+                    let event_type = event_name.clone().or_else(|| json_event_type(&data));
+                    if let Some(event_type) = event_type {
+                        if let Some(status) = classify_opencode_event(&event_type, &data) {
+                            emit_opencode_attention(&app, &attention_key, status, &event_type);
+                        }
+                    }
+                }
+                event_name = None;
+                data.clear();
+            } else if let Some(value) = trimmed.strip_prefix("event:") {
+                event_name = Some(value.trim().to_string());
+            } else if let Some(value) = trimmed.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(value.trim_start());
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn create_pty(
     id: String,
@@ -57,12 +214,18 @@ pub async fn create_pty(
     args: Option<Vec<String>>,
     rows: u16,
     cols: u16,
+    attention_key: Option<String>,
     app: AppHandle,
     state: State<'_, PtyState>,
 ) -> Result<(), String> {
     let pty_system = native_pty_system();
+    let opencode_port = if matches!(cmd.as_deref(), Some(OPENCODE_SENTINEL)) {
+        Some(reserve_local_port()?)
+    } else {
+        None
+    };
 
-    let startup_command = if cmd.is_none() {
+    let startup_command = if cmd.is_none() && opencode_port.is_none() {
         let config = crate::hive::load_app_config().await?;
         normalize_startup_command(config.comb_startup_command.as_deref()).map(str::to_string)
     } else {
@@ -89,8 +252,16 @@ pub async fn create_pty(
         })
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    let mut command = match &cmd {
-        Some(c) => {
+    let mut command = match (&cmd, opencode_port) {
+        (_, Some(port)) => {
+            let shell = resolve_login_shell();
+            let mut cb = CommandBuilder::new(&shell);
+            cb.arg("-lc");
+            cb.arg(opencode_wrapper_script(port));
+            cb.env("SHELL", &shell);
+            cb
+        }
+        (Some(c), None) => {
             let mut cb = CommandBuilder::new(c);
             if let Some(ref a) = args {
                 for arg in a {
@@ -99,7 +270,7 @@ pub async fn create_pty(
             }
             cb
         }
-        None => {
+        (None, None) => {
             let shell = resolve_login_shell();
             let mut cb = CommandBuilder::new(&shell);
             if let Some(startup_command) = startup_command.as_deref() {
@@ -131,6 +302,10 @@ pub async fn create_pty(
         .slave
         .spawn_command(command)
         .map_err(|e| format!("Failed to spawn: {}", e))?;
+
+    if let (Some(port), Some(key)) = (opencode_port, attention_key) {
+        start_opencode_event_listener(app.clone(), key, port);
+    }
 
     let writer = pair
         .master

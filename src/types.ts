@@ -26,10 +26,12 @@ export interface HiveInfo {
 
 export interface PaneConfig {
   id: string;
-  type: "agent" | "terminal";
+  type: "agent" | "terminal" | "opencode";
   cmd?: string;
   args?: string[];
 }
+
+export type CombAttentionType = "input" | "idle" | "error";
 
 // Operation types for concurrent comb operations
 export type CombOperationType = "cloning" | "copying" | "deleting";
@@ -44,6 +46,13 @@ export interface Comb {
   panes: PaneConfig[];
   cloning?: boolean; // deprecated, use operation instead
   operation?: CombOperationType; // current operation in progress
+  attention?: CombAttentionType;
+}
+
+export interface OpenCodeAttentionEvent {
+  attentionKey: string;
+  status: CombAttentionType | "clear";
+  eventType: string;
 }
 
 // Event payload from backend for operation completion

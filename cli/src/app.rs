@@ -1,9 +1,176 @@
 use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::config::*;
 use crate::fuzzy::fuzzy_match_score;
 use crate::terminal::EmbeddedTerminal;
+use serde_json::Value;
+
+#[derive(Clone)]
+pub enum OpenCodeAttentionKind {
+    Input,
+    Idle,
+    Error,
+    Clear,
+    Stopped,
+}
+
+#[derive(Clone)]
+pub struct OpenCodeAttentionEvent {
+    pub comb_id: String,
+    pub kind: OpenCodeAttentionKind,
+}
+
+fn reserve_local_port() -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("Failed to reserve OpenCode port: {}", e))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to read OpenCode port: {}", e))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+fn json_event_type(data: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    value
+        .get("type")
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn classify_opencode_event(event_type: &str, data: &str) -> Option<OpenCodeAttentionKind> {
+    match event_type {
+        "permission.asked" | "question.asked" => Some(OpenCodeAttentionKind::Input),
+        "permission.replied" | "question.replied" | "question.rejected" => {
+            Some(OpenCodeAttentionKind::Clear)
+        }
+        "session.error" => Some(OpenCodeAttentionKind::Error),
+        "session.idle" => Some(OpenCodeAttentionKind::Idle),
+        "session.status" => {
+            let value: Value = serde_json::from_str(data).ok()?;
+            let status_type = value
+                .pointer("/properties/status/type")
+                .or_else(|| value.pointer("/status/type"))
+                .and_then(Value::as_str);
+            match status_type {
+                Some("idle") => Some(OpenCodeAttentionKind::Idle),
+                Some("busy") | Some("retry") => Some(OpenCodeAttentionKind::Clear),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn push_opencode_event(
+    events: &Arc<Mutex<Vec<OpenCodeAttentionEvent>>>,
+    comb_id: &str,
+    kind: OpenCodeAttentionKind,
+) {
+    if let Ok(mut guard) = events.lock() {
+        guard.push(OpenCodeAttentionEvent {
+            comb_id: comb_id.to_string(),
+            kind,
+        });
+    }
+}
+
+fn start_opencode_event_listener(
+    comb_id: String,
+    port: u16,
+    events: Arc<Mutex<Vec<OpenCodeAttentionEvent>>>,
+) {
+    std::thread::spawn(move || {
+        let mut stream = None;
+        for _ in 0..300 {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+
+        let Some(mut stream) = stream else {
+            push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Error);
+            push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Stopped);
+            return;
+        };
+
+        let request = format!(
+            "GET /event HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n",
+            port
+        );
+        if stream.write_all(request.as_bytes()).is_err() {
+            push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Error);
+            push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Stopped);
+            return;
+        }
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Stopped);
+                    return;
+                }
+                Ok(_) if line == "\r\n" || line == "\n" => break,
+                Ok(_) => continue,
+                Err(_) => {
+                    push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Stopped);
+                    return;
+                }
+            }
+        }
+
+        let mut event_name: Option<String> = None;
+        let mut data = String::new();
+        loop {
+            line.clear();
+            let read = match reader.read_line(&mut line) {
+                Ok(read) => read,
+                Err(_) => {
+                    push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Stopped);
+                    return;
+                }
+            };
+            if read == 0 {
+                push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Stopped);
+                return;
+            }
+
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                if !data.is_empty() {
+                    let event_type = event_name.clone().or_else(|| json_event_type(&data));
+                    if let Some(event_type) = event_type {
+                        if let Some(kind) = classify_opencode_event(&event_type, &data) {
+                            push_opencode_event(&events, &comb_id, kind);
+                        }
+                    }
+                }
+                event_name = None;
+                data.clear();
+            } else if let Some(value) = trimmed.strip_prefix("event:") {
+                event_name = Some(value.trim().to_string());
+            } else if let Some(value) = trimmed.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(value.trim_start());
+            }
+        }
+    });
+}
 
 /// Background clone result.
 pub struct CloneResult {
@@ -291,6 +458,9 @@ pub struct App {
     pub active_comb_id: Option<String>,
     pub focus: Focus,
     pub terminals: HashMap<String, EmbeddedTerminal>,
+    pub opencode_terminal_ids: HashSet<String>,
+    pub opencode_attention: HashMap<String, OpenCodeAttentionKind>,
+    pub opencode_attention_events: Arc<Mutex<Vec<OpenCodeAttentionEvent>>>,
     pub last_term_size: (u16, u16),
     /// Multiple concurrent clone/copy operations
     pub pending_clones: Vec<PendingClone>,
@@ -933,6 +1103,9 @@ impl App {
             active_comb_id: None,
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
+            opencode_terminal_ids: HashSet::new(),
+            opencode_attention: HashMap::new(),
+            opencode_attention_events: Arc::new(Mutex::new(Vec::new())),
             last_term_size: (0, 0),
             pending_clones: Vec::new(),
             pending_deletes: Vec::new(),
@@ -1166,7 +1339,9 @@ impl App {
 
     /// Switch to or create a terminal for the given comb.
     pub fn open_terminal(&mut self, comb_id: &str, comb_path: &str) {
+        self.opencode_attention.remove(comb_id);
         if self.terminals.contains_key(comb_id) {
+            self.active_comb_id = Some(comb_id.to_string());
             self.focus = Focus::Terminal;
             self.last_term_size = (0, 0);
             return;
@@ -1189,12 +1364,15 @@ impl App {
             term_cols,
             self.keyboard_enhanced,
             startup_command,
+            None,
         ) {
             Ok(term) => {
                 if startup_command.is_some() {
                     self.startup_applied_comb_ids.insert(comb_id.to_string());
                 }
+                self.opencode_terminal_ids.remove(comb_id);
                 self.terminals.insert(comb_id.to_string(), term);
+                self.active_comb_id = Some(comb_id.to_string());
                 self.focus = Focus::Terminal;
                 self.last_term_size = (0, 0);
             }
@@ -1202,6 +1380,166 @@ impl App {
                 self.status_message = Some(format!("Terminal: {}", e));
             }
         }
+    }
+
+    pub fn open_opencode_terminal(&mut self, comb_id: &str, comb_path: &str) {
+        self.opencode_attention.remove(comb_id);
+        if self
+            .terminals
+            .get(comb_id)
+            .map(|term| !term.is_alive())
+            .unwrap_or(false)
+        {
+            self.terminals.remove(comb_id);
+            self.opencode_terminal_ids.remove(comb_id);
+        }
+
+        if self.opencode_terminal_ids.contains(comb_id) {
+            self.active_comb_id = Some(comb_id.to_string());
+            self.focus = Focus::Terminal;
+            self.last_term_size = (0, 0);
+            return;
+        }
+
+        let port = match reserve_local_port() {
+            Ok(port) => port,
+            Err(e) => {
+                self.status_message = Some(e);
+                return;
+            }
+        };
+
+        if let Some(term) = self.terminals.get(comb_id) {
+            start_opencode_event_listener(
+                comb_id.to_string(),
+                port,
+                Arc::clone(&self.opencode_attention_events),
+            );
+            let command = format!("opencode --hostname 127.0.0.1 --port {}\r", port);
+            term.write_input(command.as_bytes());
+            self.opencode_terminal_ids.insert(comb_id.to_string());
+            self.active_comb_id = Some(comb_id.to_string());
+            self.focus = Focus::Terminal;
+            self.last_term_size = (0, 0);
+            self.status_message = Some("Sent OpenCode command to existing terminal".to_string());
+            return;
+        }
+
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let term_cols = (cols * 70 / 100).max(20);
+        let term_rows = rows.saturating_sub(3).max(5);
+
+        match EmbeddedTerminal::new(
+            comb_path,
+            term_rows,
+            term_cols,
+            self.keyboard_enhanced,
+            None,
+            Some(port),
+        ) {
+            Ok(term) => {
+                start_opencode_event_listener(
+                    comb_id.to_string(),
+                    port,
+                    Arc::clone(&self.opencode_attention_events),
+                );
+                self.opencode_terminal_ids.insert(comb_id.to_string());
+                self.terminals.insert(comb_id.to_string(), term);
+                self.active_comb_id = Some(comb_id.to_string());
+                self.focus = Focus::Terminal;
+                self.last_term_size = (0, 0);
+            }
+            Err(e) => {
+                self.status_message = Some(format!("OpenCode: {}", e));
+            }
+        }
+    }
+
+    pub fn selected_comb_target(&self) -> Option<(String, String)> {
+        if self.items.is_empty() {
+            return None;
+        }
+        match &self.items[self.selected] {
+            NavItem::Comb { comb, .. } if !comb.cloning => {
+                Some((comb.id.clone(), comb.path.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn drain_opencode_attention(&mut self) -> bool {
+        let stale_opencode_ids = self
+            .opencode_terminal_ids
+            .iter()
+            .filter(|id| {
+                self.terminals
+                    .get(*id)
+                    .map(|term| !term.is_alive())
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for id in stale_opencode_ids {
+            self.opencode_terminal_ids.remove(&id);
+            self.opencode_attention.remove(&id);
+            if self
+                .terminals
+                .get(&id)
+                .map(|term| !term.is_alive())
+                .unwrap_or(false)
+            {
+                self.terminals.remove(&id);
+                if self.active_comb_id.as_deref() == Some(id.as_str()) {
+                    self.active_comb_id = None;
+                    self.focus = Focus::Sidebar;
+                    self.last_term_size = (0, 0);
+                }
+            }
+            changed = true;
+        }
+
+        let events = {
+            let Ok(mut guard) = self.opencode_attention_events.try_lock() else {
+                return changed;
+            };
+            if guard.is_empty() {
+                return changed;
+            }
+            guard.drain(..).collect::<Vec<_>>()
+        };
+
+        for event in events {
+            match event.kind {
+                OpenCodeAttentionKind::Stopped => {
+                    self.opencode_terminal_ids.remove(&event.comb_id);
+                    if self
+                        .terminals
+                        .get(&event.comb_id)
+                        .map(|term| !term.is_alive())
+                        .unwrap_or(false)
+                    {
+                        self.terminals.remove(&event.comb_id);
+                        if self.active_comb_id.as_deref() == Some(event.comb_id.as_str()) {
+                            self.active_comb_id = None;
+                            self.focus = Focus::Sidebar;
+                            self.last_term_size = (0, 0);
+                        }
+                    }
+                }
+                OpenCodeAttentionKind::Clear => {
+                    self.opencode_attention.remove(&event.comb_id);
+                }
+                kind => {
+                    if self.active_comb_id.as_deref() == Some(event.comb_id.as_str()) {
+                        self.opencode_attention.remove(&event.comb_id);
+                    } else {
+                        self.opencode_attention.insert(event.comb_id, kind);
+                    }
+                }
+            }
+        }
+        true
     }
 
     pub fn active_terminal(&self) -> Option<&EmbeddedTerminal> {
@@ -1230,6 +1568,8 @@ impl App {
 
     pub fn remove_terminal(&mut self, comb_id: &str) {
         self.terminals.remove(comb_id);
+        self.opencode_terminal_ids.remove(comb_id);
+        self.opencode_attention.remove(comb_id);
         if self.active_comb_id.as_deref() == Some(comb_id) {
             self.active_comb_id = None;
             self.focus = Focus::Sidebar;
@@ -1250,6 +1590,8 @@ impl App {
             .collect();
         for id in &ids_to_remove {
             self.terminals.remove(id);
+            self.opencode_terminal_ids.remove(id);
+            self.opencode_attention.remove(id);
         }
         if let Some(active) = &self.active_comb_id {
             if ids_to_remove.contains(active) {
@@ -1699,6 +2041,9 @@ mod tests {
             active_comb_id: None,
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
+            opencode_terminal_ids: HashSet::new(),
+            opencode_attention: HashMap::new(),
+            opencode_attention_events: Arc::new(Mutex::new(Vec::new())),
             last_term_size: (0, 0),
             pending_clones: Vec::new(),
             pending_deletes: Vec::new(),

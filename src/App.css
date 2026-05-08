@@ -850,6 +850,21 @@ select option {
   background: var(--bg-surface);
 }
 
+.sidebar-comb-item.attention-input {
+  border-left-color: var(--warning);
+  background: rgba(249, 226, 175, 0.08);
+}
+
+.sidebar-comb-item.attention-idle {
+  border-left-color: var(--success);
+  background: rgba(166, 227, 161, 0.06);
+}
+
+.sidebar-comb-item.attention-error {
+  border-left-color: var(--danger);
+  background: rgba(243, 139, 168, 0.08);
+}
+
 .sidebar-comb-info {
   display: flex;
   flex-direction: column;
@@ -904,6 +919,26 @@ select option {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.sidebar-comb-attention {
+  margin-left: 6px;
+  font-family: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-comb-item.attention-input .sidebar-comb-attention {
+  color: var(--warning);
+}
+
+.sidebar-comb-item.attention-idle .sidebar-comb-attention {
+  color: var(--success);
+}
+
+.sidebar-comb-item.attention-error .sidebar-comb-attention {
+  color: var(--danger);
 }
 
 .sidebar-comb-actions {
