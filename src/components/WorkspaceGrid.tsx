@@ -1,6 +1,8 @@
 import { TerminalPane } from "./TerminalPane";
 import type { Comb, PaneConfig, CustomButton } from "../types";
 
+const OPENCODE_CMD = "__beehive_opencode__";
+
 interface Props {
   comb: Comb;
   panes: PaneConfig[];
@@ -8,12 +10,13 @@ interface Props {
   isVisible: boolean;
   focusedPaneId: string | null;
   onAddPane: (cmd?: string) => void;
+  onAddOpenCodePane: () => void;
   onRemovePane: (id: string) => void;
   onPaneFocused: (paneId: string) => void;
   onConfigureButtons: () => void;
 }
 
-export function WorkspaceGrid({ comb, panes, customButtons, isVisible, focusedPaneId, onAddPane, onRemovePane, onPaneFocused, onConfigureButtons }: Props) {
+export function WorkspaceGrid({ comb, panes, customButtons, isVisible, focusedPaneId, onAddPane, onAddOpenCodePane, onRemovePane, onPaneFocused, onConfigureButtons }: Props) {
   const cols = panes.length <= 1 ? 1 : panes.length <= 4 ? 2 : 3;
 
   return (
@@ -26,6 +29,9 @@ export function WorkspaceGrid({ comb, panes, customButtons, isVisible, focusedPa
         <div className="workspace-actions">
           <button className="btn btn-sm" onClick={() => onAddPane()}>
             + Terminal
+          </button>
+          <button className="btn btn-sm" onClick={onAddOpenCodePane}>
+            + OpenCode
           </button>
           {customButtons.map((btn, i) => (
             <button key={i} className="btn btn-sm" onClick={() => onAddPane(btn.cmd)}>
@@ -53,7 +59,7 @@ export function WorkspaceGrid({ comb, panes, customButtons, isVisible, focusedPa
             <div className="pane-header">
               <span className="pane-title">
                 <span className="pane-type-badge">
-                  {pane.type === "agent" ? "AGENT" : "TERM"}
+                  {pane.type === "opencode" ? "OCODE" : pane.type === "agent" ? "AGENT" : "TERM"}
                 </span>
               </span>
               <button
@@ -69,6 +75,8 @@ export function WorkspaceGrid({ comb, panes, customButtons, isVisible, focusedPa
                 id={pane.id}
                 cwd={comb.path}
                 cmd={pane.cmd}
+                args={pane.args}
+                attentionKey={pane.type === "opencode" || pane.cmd === OPENCODE_CMD ? comb.id : undefined}
                 isVisible={isVisible}
                 shouldFocus={focusedPaneId === pane.id}
                 onFocus={() => onPaneFocused(pane.id)}

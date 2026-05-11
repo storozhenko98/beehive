@@ -11,7 +11,9 @@ import { HiveListScreen } from "./HiveListScreen";
 import { SettingsScreen } from "./SettingsScreen";
 import { HelpScreen } from "./HelpScreen";
 import { Toast } from "./Toast";
-import type { HiveInfo, Comb, PaneConfig, CustomButton, CombOperationResult, HiveOperationResult, Nest, HiveState } from "../types";
+import type { HiveInfo, Comb, PaneConfig, CustomButton, CombOperationResult, HiveOperationResult, Nest, HiveState, OpenCodeAttentionEvent, CombAttentionType } from "../types";
+
+const OPENCODE_CMD = "__beehive_opencode__";
 
 // Normalize comb: convert legacy `cloning` to `operation`
 function normalizeComb(comb: Comb): Comb {
@@ -73,8 +75,10 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
   
   // Toast notifications for operation errors
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: "error" | "success" }>>([]);
+  const [combAttention, setCombAttention] = useState<Map<string, CombAttentionType>>(new Map());
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeCombIdRef = useRef<string | null>(null);
   
   const addToast = useCallback((message: string, type: "error" | "success" = "error") => {
     const id = crypto.randomUUID();
@@ -91,6 +95,10 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
 
   const activeHive = hives.find((h) => h.dirName === activeHiveDirName) ?? null;
   const activeRuntime = activeHiveDirName ? hiveRuntimes.get(activeHiveDirName) : undefined;
+
+  useEffect(() => {
+    activeCombIdRef.current = activeRuntime?.activeCombId ?? null;
+  }, [activeRuntime?.activeCombId]);
 
   // Load hives on mount
   useEffect(() => {
@@ -191,6 +199,24 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     };
   }, [addToast]);
 
+  useEffect(() => {
+    const unlisten = listen<OpenCodeAttentionEvent>("opencode-attention", (event) => {
+      const { attentionKey, status } = event.payload;
+      setCombAttention((prev) => {
+        const next = new Map(prev);
+        if (status === "clear" || activeCombIdRef.current === attentionKey) {
+          next.delete(attentionKey);
+        } else {
+          next.set(attentionKey, status);
+        }
+        return next;
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
   // Periodically refresh comb branches from git
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -263,6 +289,12 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
 
   async function openComb(comb: Comb) {
     if (!activeHiveDirName) return;
+    setCombAttention((prev) => {
+      if (!prev.has(comb.id)) return prev;
+      const next = new Map(prev);
+      next.delete(comb.id);
+      return next;
+    });
 
     const runtime = getOrCreateRuntime(activeHiveDirName);
 
@@ -334,10 +366,40 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
     [activeHiveDirName, beehiveDir]
   );
 
+  const addOpenCodePane = useCallback(
+    (combId: string) => {
+      if (!activeHiveDirName) return;
+      const hiveDirName = activeHiveDirName;
+      updateRuntime(hiveDirName, (rt) => {
+        const current = rt.panesByComb.get(combId) ?? [];
+        const newPane: PaneConfig = {
+          id: crypto.randomUUID(),
+          type: "opencode",
+          cmd: OPENCODE_CMD,
+        };
+        const updated = [...current, newPane];
+        debounceSavePanes(hiveDirName, combId, updated);
+        const newFocused = new Map(rt.focusedPaneByComb);
+        newFocused.set(combId, newPane.id);
+        return { ...rt, panesByComb: new Map(rt.panesByComb).set(combId, updated), focusedPaneByComb: newFocused };
+      });
+    },
+    [activeHiveDirName, beehiveDir]
+  );
+
   const removePane = useCallback(
     (combId: string, paneId: string) => {
       if (!activeHiveDirName) return;
       const hiveDirName = activeHiveDirName;
+      const removedPane = hiveRuntimes.get(hiveDirName)?.panesByComb.get(combId)?.find((p) => p.id === paneId);
+      if (removedPane?.type === "opencode" || removedPane?.cmd === OPENCODE_CMD) {
+        setCombAttention((prev) => {
+          if (!prev.has(combId)) return prev;
+          const next = new Map(prev);
+          next.delete(combId);
+          return next;
+        });
+      }
       updateRuntime(hiveDirName, (rt) => {
         const current = rt.panesByComb.get(combId) ?? [];
         const updated = current.filter((p) => p.id !== paneId);
@@ -345,7 +407,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         return { ...rt, panesByComb: new Map(rt.panesByComb).set(combId, updated) };
       });
     },
-    [activeHiveDirName, beehiveDir]
+    [activeHiveDirName, beehiveDir, hiveRuntimes]
   );
 
   async function handleDeleteComb(combId: string) {
@@ -668,6 +730,10 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
   }
 
   const currentCombs = activeRuntime?.combs ?? [];
+  const currentDisplayCombs = currentCombs.map((comb) => ({
+    ...comb,
+    attention: combAttention.get(comb.id),
+  }));
   const currentActiveCombId = activeRuntime?.activeCombId ?? null;
 
   return (
@@ -676,7 +742,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
         hives={hives}
         activeHive={activeHive}
         nests={activeRuntime?.nests ?? []}
-        combs={currentCombs}
+        combs={currentDisplayCombs}
         activeCombId={currentActiveCombId}
         onSelectHive={(hive) => {
           selectHive(hive);
@@ -709,6 +775,7 @@ export function MainLayout({ beehiveDir, onReset }: Props) {
             isVisible={isVisible}
             focusedPaneId={focusedPaneId}
             onAddPane={(cmd) => addPane(comb.id, cmd)}
+            onAddOpenCodePane={() => addOpenCodePane(comb.id)}
             onRemovePane={(paneId) => removePane(comb.id, paneId)}
             onPaneFocused={(paneId) => handlePaneFocused(comb.id, paneId)}
             onConfigureButtons={() => {

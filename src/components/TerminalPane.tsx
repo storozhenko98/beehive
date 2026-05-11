@@ -23,13 +23,14 @@ interface TerminalPaneProps {
   cwd: string;
   cmd?: string;
   args?: string[];
+  attentionKey?: string;
   isVisible: boolean;
   shouldFocus?: boolean;
   onFocus?: () => void;
   onExit?: () => void;
 }
 
-export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFocus, onExit }: TerminalPaneProps) {
+export function TerminalPane({ id, cwd, cmd, args, attentionKey, isVisible, shouldFocus, onFocus, onExit }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -180,6 +181,7 @@ export function TerminalPane({ id, cwd, cmd, args, isVisible, shouldFocus, onFoc
         cwd: initialCwdRef.current,
         cmd: cmd ?? null,
         args: args ?? null,
+        attentionKey: attentionKey ?? null,
         rows: terminal.rows,
         cols: terminal.cols,
       }).catch((err) => {

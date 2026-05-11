@@ -142,6 +142,10 @@ fn startup_wrapper_script() -> &'static str {
     "eval \"$BEEHIVE_STARTUP_COMMAND\"\nexec \"$SHELL\" -l"
 }
 
+fn opencode_wrapper_script(port: u16) -> String {
+    format!("opencode --hostname 127.0.0.1 --port {}\nexec \"$SHELL\" -l", port)
+}
+
 pub struct EmbeddedTerminal {
     /// vt100 parser — owned exclusively by the main thread (no locks needed).
     /// Background reader sends raw bytes via `output_rx` channel instead.
@@ -172,6 +176,7 @@ impl EmbeddedTerminal {
         cols: u16,
         outer_keyboard_enhanced: bool,
         startup_command: Option<&str>,
+        opencode_port: Option<u16>,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
 
@@ -185,15 +190,24 @@ impl EmbeddedTerminal {
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
         let shell = resolve_login_shell();
-        let mut cmd = CommandBuilder::new(&shell);
-        if let Some(startup_command) = normalize_startup_command(startup_command) {
+        let mut cmd = if let Some(port) = opencode_port {
+            let mut cmd = CommandBuilder::new(&shell);
             cmd.arg("-lc");
-            cmd.arg(startup_wrapper_script());
+            cmd.arg(opencode_wrapper_script(port));
             cmd.env("SHELL", &shell);
-            cmd.env("BEEHIVE_STARTUP_COMMAND", startup_command);
+            cmd
         } else {
-            cmd.arg("-l");
-        }
+            let mut cmd = CommandBuilder::new(&shell);
+            if let Some(startup_command) = normalize_startup_command(startup_command) {
+                cmd.arg("-lc");
+                cmd.arg(startup_wrapper_script());
+                cmd.env("SHELL", &shell);
+                cmd.env("BEEHIVE_STARTUP_COMMAND", startup_command);
+            } else {
+                cmd.arg("-l");
+            }
+            cmd
+        };
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("PATH", full_path());

@@ -197,9 +197,10 @@ fn run_app(
         // --- Phase 2: Background checks ---
         let clone_done = check_pending_clones(app);
         let delete_done = check_pending_deletes(app);
+        let attention_changed = app.drain_opencode_attention();
 
         // Force redraw when operations complete or are still in progress (spinner animation)
-        if clone_done || delete_done || app.has_pending_work() {
+        if clone_done || delete_done || attention_changed || app.has_pending_work() {
             dirty = true;
         }
 
@@ -745,11 +746,28 @@ fn handle_key(
                 KeyCode::Char('f') => app.start_comb_finder(),
                 KeyCode::Char('m') => app.start_move_comb(),
                 KeyCode::Char('c') => app.start_copy_comb(),
+                KeyCode::Char('o') => {
+                    if let Some((id, path)) = app.selected_comb_target() {
+                        if Path::new(&path).exists() {
+                            app.open_opencode_terminal(&id, &path);
+                        } else {
+                            app.status_message = Some("Dir not found".to_string());
+                        }
+                    }
+                }
                 KeyCode::Char('a') => app.start_add_hive(),
+                KeyCode::Char('A') => app.start_create_fresh_hive(),
                 KeyCode::Char('d') => app.start_delete(),
                 KeyCode::Char('R') => {
-                    app.refresh();
-                    app.status_message = Some("Refreshed".to_string());
+                    if let Some((id, path)) = app.selected_comb_target() {
+                        if Path::new(&path).exists() {
+                            app.restart_comb_terminal(&id, &path);
+                        } else {
+                            app.status_message = Some("Dir not found".to_string());
+                        }
+                    } else {
+                        app.status_message = Some("Select a comb to restart".to_string());
+                    }
                 }
                 KeyCode::Char('s') => app.open_settings(),
                 KeyCode::Char('?') => app.open_help(),
@@ -1863,6 +1881,23 @@ fn handle_input_submit(
 
                 match add_hive(&app.beehive_dir, &value) {
                     Ok(name) => app.status_message = Some(format!("Added '{}'", name)),
+                    Err(e) => app.status_message = Some(format!("Failed: {}", e)),
+                }
+                app.refresh();
+            }
+            InputAction::CreateFreshHiveRepo => {
+                app.status_message = Some("Creating repo...".to_string());
+                terminal.draw(|frame| {
+                    ui::render(frame, app);
+                })?;
+
+                match create_fresh_hive(&app.beehive_dir, &value, "", true, "main", "main") {
+                    Ok((hive, comb)) => {
+                        app.status_message = Some(format!(
+                            "Created '{}' with comb '{}'",
+                            hive.repo_name, comb.name
+                        ));
+                    }
                     Err(e) => app.status_message = Some(format!("Failed: {}", e)),
                 }
                 app.refresh();
