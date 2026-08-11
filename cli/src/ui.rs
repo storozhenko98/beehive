@@ -840,6 +840,10 @@ fn render_help(frame: &mut Frame) {
             Span::styled("Open OpenCode and watch for attention", desc_style),
         ]),
         Line::from(vec![
+            Span::styled("  p        ", key_style),
+            Span::styled("Open Pi and watch for attention", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled("  r        ", key_style),
             Span::styled("Rename selected comb or nest", desc_style),
         ]),

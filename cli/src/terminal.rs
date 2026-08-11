@@ -143,7 +143,42 @@ fn startup_wrapper_script() -> &'static str {
 }
 
 fn opencode_wrapper_script(port: u16) -> String {
-    format!("opencode --hostname 127.0.0.1 --port {}\nexec \"$SHELL\" -l", port)
+    format!(
+        "opencode --hostname 127.0.0.1 --port {}\nexec \"$SHELL\" -l",
+        port
+    )
+}
+
+pub fn pi_status_extension() -> &'static str {
+    include_str!("../../shared/pi-status-extension.ts")
+}
+
+fn pi_status_process_exit_reporter() -> &'static str {
+    include_str!("../../shared/pi-status-process-exit.js")
+}
+
+pub fn pi_wrapper_script() -> &'static str {
+    r#"extension_dir="$(mktemp -d "${TMPDIR:-/tmp}/beehive-pi-status.XXXXXX")" || exit 1
+extension_path="$extension_dir/index.ts"
+printf '%s' "$BEEHIVE_PI_STATUS_EXTENSION" > "$extension_path" || exit 1
+pi -e "$extension_path"
+node -e "$BEEHIVE_PI_STATUS_REPORTER"
+rm -f "$extension_path"
+rmdir "$extension_dir"
+exec "$SHELL" -l"#
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+pub fn pi_command_for_existing_shell(port: u16) -> String {
+    format!(
+        "export BEEHIVE_PI_STATUS_PORT={}; extension_dir=\"$(mktemp -d \"${{TMPDIR:-/tmp}}/beehive-pi-status.XXXXXX\")\" && extension_path=\"$extension_dir/index.ts\" && printf '%s' {} > \"$extension_path\" && pi -e \"$extension_path\"; status=$?; node -e {}; rm -f \"$extension_path\"; rmdir \"$extension_dir\"; (exit $status)\r",
+        port,
+        shell_single_quote(pi_status_extension()),
+        shell_single_quote(pi_status_process_exit_reporter()),
+    )
 }
 
 pub struct EmbeddedTerminal {
@@ -177,6 +212,7 @@ impl EmbeddedTerminal {
         outer_keyboard_enhanced: bool,
         startup_command: Option<&str>,
         opencode_port: Option<u16>,
+        pi_status_port: Option<u16>,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
 
@@ -195,6 +231,18 @@ impl EmbeddedTerminal {
             cmd.arg("-lc");
             cmd.arg(opencode_wrapper_script(port));
             cmd.env("SHELL", &shell);
+            cmd
+        } else if let Some(port) = pi_status_port {
+            let mut cmd = CommandBuilder::new(&shell);
+            cmd.arg("-lc");
+            cmd.arg(pi_wrapper_script());
+            cmd.env("SHELL", &shell);
+            cmd.env("BEEHIVE_PI_STATUS_EXTENSION", pi_status_extension());
+            cmd.env(
+                "BEEHIVE_PI_STATUS_REPORTER",
+                pi_status_process_exit_reporter(),
+            );
+            cmd.env("BEEHIVE_PI_STATUS_PORT", port.to_string());
             cmd
         } else {
             let mut cmd = CommandBuilder::new(&shell);
@@ -408,8 +456,7 @@ impl EmbeddedTerminal {
         self.query_tail.clear();
         if tail_start < buf.len() {
             let keep = (buf.len() - tail_start).min(64);
-            self.query_tail
-                .extend_from_slice(&buf[buf.len() - keep..]);
+            self.query_tail.extend_from_slice(&buf[buf.len() - keep..]);
         }
 
         if !responses.is_empty() {
@@ -569,7 +616,10 @@ fn dec_mode_response(
         )),
         1003 => enabled_mode_code(matches!(mouse_protocol_mode, MouseProtocolMode::AnyMotion)),
         1004 => enabled_mode_code(focus_reporting),
-        1006 => enabled_mode_code(matches!(mouse_protocol_encoding, MouseProtocolEncoding::Sgr)),
+        1006 => enabled_mode_code(matches!(
+            mouse_protocol_encoding,
+            MouseProtocolEncoding::Sgr
+        )),
         1007 => enabled_mode_code(alternate_scroll),
         1049 => enabled_mode_code(alternate_screen),
         2004 => enabled_mode_code(bracketed_paste),
@@ -580,7 +630,11 @@ fn dec_mode_response(
 }
 
 fn enabled_mode_code(enabled: bool) -> u8 {
-    if enabled { 1 } else { 2 }
+    if enabled {
+        1
+    } else {
+        2
+    }
 }
 
 /// Compute the kitty keyboard protocol modifier parameter from crossterm KeyModifiers.
@@ -1134,15 +1188,18 @@ fn alternate_scroll_bytes(
         MouseEventKind::ScrollUp => {
             arrow_key_bytes(crossterm::event::KeyCode::Up, terminal.application_cursor())
         }
-        MouseEventKind::ScrollDown => {
-            arrow_key_bytes(crossterm::event::KeyCode::Down, terminal.application_cursor())
-        }
-        MouseEventKind::ScrollLeft => {
-            arrow_key_bytes(crossterm::event::KeyCode::Left, terminal.application_cursor())
-        }
-        MouseEventKind::ScrollRight => {
-            arrow_key_bytes(crossterm::event::KeyCode::Right, terminal.application_cursor())
-        }
+        MouseEventKind::ScrollDown => arrow_key_bytes(
+            crossterm::event::KeyCode::Down,
+            terminal.application_cursor(),
+        ),
+        MouseEventKind::ScrollLeft => arrow_key_bytes(
+            crossterm::event::KeyCode::Left,
+            terminal.application_cursor(),
+        ),
+        MouseEventKind::ScrollRight => arrow_key_bytes(
+            crossterm::event::KeyCode::Right,
+            terminal.application_cursor(),
+        ),
         _ => vec![],
     }
 }
@@ -1365,6 +1422,25 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    #[test]
+    fn pi_launcher_uses_a_scoped_status_extension_and_returns_to_the_shell() {
+        let script = pi_wrapper_script();
+        assert!(script.contains("BEEHIVE_PI_STATUS_EXTENSION"));
+        assert!(script.contains("pi -e \"$extension_path\""));
+        assert!(script.contains("rm -f \"$extension_path\""));
+        assert!(script.contains("rmdir \"$extension_dir\""));
+        assert!(script.contains("exec \"$SHELL\" -l"));
+    }
+
+    #[test]
+    fn pi_status_extension_reports_busy_and_settled_lifecycle_events() {
+        let extension = pi_status_extension();
+        assert!(extension.contains("pi.on(\"agent_start\""));
+        assert!(extension.contains("notify(\"clear\", \"agent_start\")"));
+        assert!(extension.contains("pi.on(\"agent_settled\""));
+        assert!(extension.contains("notify(\"idle\", \"agent_settled\")"));
+    }
+
     /// Helper: construct a key event with given code + modifiers
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent {
@@ -1400,8 +1476,10 @@ mod tests {
     #[test]
     fn test_resolve_login_shell_prefers_valid_shell_env() {
         let shell = write_temp_shell("preferred", true);
-        let resolved =
-            resolve_login_shell_with_candidates(Some(shell.to_str().unwrap()), &["/does/not/exist"]);
+        let resolved = resolve_login_shell_with_candidates(
+            Some(shell.to_str().unwrap()),
+            &["/does/not/exist"],
+        );
         assert_eq!(resolved, shell.to_string_lossy());
         fs::remove_file(shell).unwrap();
     }

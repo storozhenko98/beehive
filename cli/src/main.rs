@@ -755,6 +755,15 @@ fn handle_key(
                         }
                     }
                 }
+                KeyCode::Char('p') => {
+                    if let Some((id, path)) = app.selected_comb_target() {
+                        if Path::new(&path).exists() {
+                            app.open_pi_terminal(&id, &path);
+                        } else {
+                            app.status_message = Some("Dir not found".to_string());
+                        }
+                    }
+                }
                 KeyCode::Char('a') => app.start_add_hive(),
                 KeyCode::Char('A') => app.start_create_fresh_hive(),
                 KeyCode::Char('d') => app.start_delete(),
@@ -1595,6 +1604,11 @@ mod tests {
             active_comb_id: None,
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
+            opencode_terminal_ids: HashSet::new(),
+            pi_terminal_ids: HashSet::new(),
+            pi_listener_controls: HashMap::new(),
+            opencode_attention: HashMap::new(),
+            opencode_attention_events: Arc::new(Mutex::new(Vec::new())),
             last_term_size: (0, 0),
             pending_clones: Vec::new(),
             pending_deletes: Vec::new(),

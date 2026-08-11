@@ -1,12 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::config::*;
 use crate::fuzzy::fuzzy_match_score;
+use crate::terminal::pi_command_for_existing_shell;
 use crate::terminal::EmbeddedTerminal;
+use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -167,6 +170,59 @@ fn start_opencode_event_listener(
                     data.push('\n');
                 }
                 data.push_str(value.trim_start());
+            }
+        }
+    });
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PiAttentionMessage {
+    status: String,
+}
+
+fn classify_pi_status(status: &str) -> Option<OpenCodeAttentionKind> {
+    match status {
+        "clear" => Some(OpenCodeAttentionKind::Clear),
+        "idle" => Some(OpenCodeAttentionKind::Idle),
+        "error" => Some(OpenCodeAttentionKind::Error),
+        "stopped" => Some(OpenCodeAttentionKind::Stopped),
+        _ => None,
+    }
+}
+
+fn start_pi_event_listener(
+    comb_id: String,
+    listener: TcpListener,
+    events: Arc<Mutex<Vec<OpenCodeAttentionEvent>>>,
+    alive: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        if listener.set_nonblocking(true).is_err() {
+            push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Error);
+            return;
+        }
+
+        while alive.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut line = String::new();
+                    if BufReader::new(stream).read_line(&mut line).is_ok() {
+                        if let Ok(message) = serde_json::from_str::<PiAttentionMessage>(&line) {
+                            if let Some(kind) = classify_pi_status(&message.status) {
+                                push_opencode_event(&events, &comb_id, kind);
+                            }
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => {
+                    push_opencode_event(&events, &comb_id, OpenCodeAttentionKind::Error);
+                    return;
+                }
             }
         }
     });
@@ -459,6 +515,8 @@ pub struct App {
     pub focus: Focus,
     pub terminals: HashMap<String, EmbeddedTerminal>,
     pub opencode_terminal_ids: HashSet<String>,
+    pub pi_terminal_ids: HashSet<String>,
+    pub pi_listener_controls: HashMap<String, Arc<AtomicBool>>,
     pub opencode_attention: HashMap<String, OpenCodeAttentionKind>,
     pub opencode_attention_events: Arc<Mutex<Vec<OpenCodeAttentionEvent>>>,
     pub last_term_size: (u16, u16),
@@ -1104,6 +1162,8 @@ impl App {
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
             opencode_terminal_ids: HashSet::new(),
+            pi_terminal_ids: HashSet::new(),
+            pi_listener_controls: HashMap::new(),
             opencode_attention: HashMap::new(),
             opencode_attention_events: Arc::new(Mutex::new(Vec::new())),
             last_term_size: (0, 0),
@@ -1365,6 +1425,7 @@ impl App {
             self.keyboard_enhanced,
             startup_command,
             None,
+            None,
         ) {
             Ok(term) => {
                 if startup_command.is_some() {
@@ -1384,6 +1445,12 @@ impl App {
 
     pub fn open_opencode_terminal(&mut self, comb_id: &str, comb_path: &str) {
         self.opencode_attention.remove(comb_id);
+        if self.pi_terminal_ids.remove(comb_id) {
+            self.terminals.remove(comb_id);
+            if let Some(alive) = self.pi_listener_controls.remove(comb_id) {
+                alive.store(false, Ordering::Relaxed);
+            }
+        }
         if self
             .terminals
             .get(comb_id)
@@ -1436,6 +1503,7 @@ impl App {
             self.keyboard_enhanced,
             None,
             Some(port),
+            None,
         ) {
             Ok(term) => {
                 start_opencode_event_listener(
@@ -1455,6 +1523,96 @@ impl App {
         }
     }
 
+    pub fn open_pi_terminal(&mut self, comb_id: &str, comb_path: &str) {
+        self.opencode_attention.remove(comb_id);
+        if self
+            .terminals
+            .get(comb_id)
+            .map(|term| !term.is_alive())
+            .unwrap_or(false)
+        {
+            self.terminals.remove(comb_id);
+            self.pi_terminal_ids.remove(comb_id);
+            if let Some(alive) = self.pi_listener_controls.remove(comb_id) {
+                alive.store(false, Ordering::Relaxed);
+            }
+        }
+
+        if self.pi_terminal_ids.contains(comb_id) {
+            self.active_comb_id = Some(comb_id.to_string());
+            self.focus = Focus::Terminal;
+            self.last_term_size = (0, 0);
+            return;
+        }
+
+        if self.opencode_terminal_ids.remove(comb_id) {
+            self.terminals.remove(comb_id);
+        }
+
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) => {
+                self.status_message = Some(format!("Failed to reserve Pi status port: {}", error));
+                return;
+            }
+        };
+        let port = match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(error) => {
+                self.status_message = Some(format!("Failed to read Pi status port: {}", error));
+                return;
+            }
+        };
+        let listener_alive = Arc::new(AtomicBool::new(true));
+        start_pi_event_listener(
+            comb_id.to_string(),
+            listener,
+            Arc::clone(&self.opencode_attention_events),
+            Arc::clone(&listener_alive),
+        );
+
+        if let Some(term) = self.terminals.get(comb_id) {
+            let command = pi_command_for_existing_shell(port);
+            term.write_input(command.as_bytes());
+            self.pi_terminal_ids.insert(comb_id.to_string());
+            self.pi_listener_controls
+                .insert(comb_id.to_string(), listener_alive);
+            self.active_comb_id = Some(comb_id.to_string());
+            self.focus = Focus::Terminal;
+            self.last_term_size = (0, 0);
+            self.status_message = Some("Sent Pi command to existing terminal".to_string());
+            return;
+        }
+
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let term_cols = (cols * 70 / 100).max(20);
+        let term_rows = rows.saturating_sub(3).max(5);
+
+        match EmbeddedTerminal::new(
+            comb_path,
+            term_rows,
+            term_cols,
+            self.keyboard_enhanced,
+            None,
+            None,
+            Some(port),
+        ) {
+            Ok(term) => {
+                self.pi_terminal_ids.insert(comb_id.to_string());
+                self.pi_listener_controls
+                    .insert(comb_id.to_string(), listener_alive);
+                self.terminals.insert(comb_id.to_string(), term);
+                self.active_comb_id = Some(comb_id.to_string());
+                self.focus = Focus::Terminal;
+                self.last_term_size = (0, 0);
+            }
+            Err(error) => {
+                listener_alive.store(false, Ordering::Relaxed);
+                self.status_message = Some(format!("Pi: {}", error));
+            }
+        }
+    }
+
     pub fn selected_comb_target(&self) -> Option<(String, String)> {
         if self.items.is_empty() {
             return None;
@@ -1470,6 +1628,10 @@ impl App {
     pub fn restart_comb_terminal(&mut self, comb_id: &str, comb_path: &str) {
         self.terminals.remove(comb_id);
         self.opencode_terminal_ids.remove(comb_id);
+        self.pi_terminal_ids.remove(comb_id);
+        if let Some(alive) = self.pi_listener_controls.remove(comb_id) {
+            alive.store(false, Ordering::Relaxed);
+        }
         self.opencode_attention.remove(comb_id);
         self.startup_applied_comb_ids.remove(comb_id);
         self.open_terminal(comb_id, comb_path);
@@ -1479,9 +1641,10 @@ impl App {
     }
 
     pub fn drain_opencode_attention(&mut self) -> bool {
-        let stale_opencode_ids = self
+        let stale_agent_ids = self
             .opencode_terminal_ids
             .iter()
+            .chain(self.pi_terminal_ids.iter())
             .filter(|id| {
                 self.terminals
                     .get(*id)
@@ -1489,10 +1652,16 @@ impl App {
                     .unwrap_or(true)
             })
             .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>();
         let mut changed = false;
-        for id in stale_opencode_ids {
+        for id in stale_agent_ids {
             self.opencode_terminal_ids.remove(&id);
+            self.pi_terminal_ids.remove(&id);
+            if let Some(alive) = self.pi_listener_controls.remove(&id) {
+                alive.store(false, Ordering::Relaxed);
+            }
             self.opencode_attention.remove(&id);
             if self
                 .terminals
@@ -1524,6 +1693,10 @@ impl App {
             match event.kind {
                 OpenCodeAttentionKind::Stopped => {
                     self.opencode_terminal_ids.remove(&event.comb_id);
+                    self.pi_terminal_ids.remove(&event.comb_id);
+                    if let Some(alive) = self.pi_listener_controls.remove(&event.comb_id) {
+                        alive.store(false, Ordering::Relaxed);
+                    }
                     if self
                         .terminals
                         .get(&event.comb_id)
@@ -1580,6 +1753,10 @@ impl App {
     pub fn remove_terminal(&mut self, comb_id: &str) {
         self.terminals.remove(comb_id);
         self.opencode_terminal_ids.remove(comb_id);
+        self.pi_terminal_ids.remove(comb_id);
+        if let Some(alive) = self.pi_listener_controls.remove(comb_id) {
+            alive.store(false, Ordering::Relaxed);
+        }
         self.opencode_attention.remove(comb_id);
         if self.active_comb_id.as_deref() == Some(comb_id) {
             self.active_comb_id = None;
@@ -1602,6 +1779,10 @@ impl App {
         for id in &ids_to_remove {
             self.terminals.remove(id);
             self.opencode_terminal_ids.remove(id);
+            self.pi_terminal_ids.remove(id);
+            if let Some(alive) = self.pi_listener_controls.remove(id) {
+                alive.store(false, Ordering::Relaxed);
+            }
             self.opencode_attention.remove(id);
         }
         if let Some(active) = &self.active_comb_id {
@@ -2001,6 +2182,27 @@ impl App {
 mod tests {
     use super::*;
 
+    #[test]
+    fn pi_status_messages_map_to_comb_attention() {
+        assert!(matches!(
+            classify_pi_status("clear"),
+            Some(OpenCodeAttentionKind::Clear)
+        ));
+        assert!(matches!(
+            classify_pi_status("idle"),
+            Some(OpenCodeAttentionKind::Idle)
+        ));
+        assert!(matches!(
+            classify_pi_status("error"),
+            Some(OpenCodeAttentionKind::Error)
+        ));
+        assert!(matches!(
+            classify_pi_status("stopped"),
+            Some(OpenCodeAttentionKind::Stopped)
+        ));
+        assert!(classify_pi_status("unknown").is_none());
+    }
+
     fn hive(dir_name: &str, repo_name: &str) -> HiveInfo {
         HiveInfo {
             dir_name: dir_name.to_string(),
@@ -2053,6 +2255,8 @@ mod tests {
             focus: Focus::Sidebar,
             terminals: HashMap::new(),
             opencode_terminal_ids: HashSet::new(),
+            pi_terminal_ids: HashSet::new(),
+            pi_listener_controls: HashMap::new(),
             opencode_attention: HashMap::new(),
             opencode_attention_events: Arc::new(Mutex::new(Vec::new())),
             last_term_size: (0, 0),

@@ -73,7 +73,8 @@ export function HelpScreen({ onBack, backLabel }: Props) {
             <p>
               Each comb has a grid of panes. Add terminals for shell access
               or agent panes that launch your configured command (e.g. Claude
-              Code). Layouts save automatically.
+              Code). Dedicated OpenCode and Pi panes also report when their
+              agent is ready. Layouts save automatically.
             </p>
           </div>
         </div>
