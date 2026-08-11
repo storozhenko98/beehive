@@ -26,7 +26,7 @@ export interface HiveInfo {
 
 export interface PaneConfig {
   id: string;
-  type: "agent" | "terminal" | "opencode";
+  type: "agent" | "terminal" | "opencode" | "pi";
   cmd?: string;
   args?: string[];
 }
@@ -51,7 +51,7 @@ export interface Comb {
 
 export interface OpenCodeAttentionEvent {
   attentionKey: string;
-  status: CombAttentionType | "clear";
+  status: CombAttentionType | "clear" | "stopped";
   eventType: string;
 }
 

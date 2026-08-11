@@ -2,21 +2,24 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
 const OPENCODE_SENTINEL: &str = "__beehive_opencode__";
+const PI_SENTINEL: &str = "__beehive_pi__";
 
 pub struct PtySession {
     master: Arc<std::sync::Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    attention_listener_alive: Option<Arc<AtomicBool>>,
 }
 
 pub struct PtyManager {
@@ -57,7 +60,29 @@ fn startup_wrapper_script() -> &'static str {
 }
 
 fn opencode_wrapper_script(port: u16) -> String {
-    format!("opencode --hostname 127.0.0.1 --port {}\nexec \"$SHELL\" -l", port)
+    format!(
+        "opencode --hostname 127.0.0.1 --port {}\nexec \"$SHELL\" -l",
+        port
+    )
+}
+
+fn pi_status_extension() -> &'static str {
+    include_str!("../../shared/pi-status-extension.ts")
+}
+
+fn pi_status_process_exit_reporter() -> &'static str {
+    include_str!("../../shared/pi-status-process-exit.js")
+}
+
+fn pi_wrapper_script() -> &'static str {
+    r#"extension_dir="$(mktemp -d "${TMPDIR:-/tmp}/beehive-pi-status.XXXXXX")" || exit 1
+extension_path="$extension_dir/index.ts"
+printf '%s' "$BEEHIVE_PI_STATUS_EXTENSION" > "$extension_path" || exit 1
+pi -e "$extension_path"
+node -e "$BEEHIVE_PI_STATUS_REPORTER"
+rm -f "$extension_path"
+rmdir "$extension_dir"
+exec "$SHELL" -l"#
 }
 
 #[derive(Clone, Serialize)]
@@ -66,6 +91,13 @@ pub struct OpenCodeAttentionEvent {
     pub attention_key: String,
     pub status: String,
     pub event_type: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PiAttentionMessage {
+    status: String,
+    event_type: String,
 }
 
 fn reserve_local_port() -> Result<u16, String> {
@@ -206,6 +238,56 @@ fn start_opencode_event_listener(app: AppHandle, attention_key: String, port: u1
     });
 }
 
+fn start_pi_event_listener(
+    app: AppHandle,
+    attention_key: String,
+    listener: TcpListener,
+    alive: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        if listener.set_nonblocking(true).is_err() {
+            emit_opencode_attention(&app, &attention_key, "error", "beehive.pi.listen_failed");
+            return;
+        }
+
+        while alive.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut line = String::new();
+                    if BufReader::new(stream).read_line(&mut line).is_ok() {
+                        if let Ok(message) = serde_json::from_str::<PiAttentionMessage>(&line) {
+                            if matches!(
+                                message.status.as_str(),
+                                "clear" | "idle" | "error" | "stopped"
+                            ) {
+                                emit_opencode_attention(
+                                    &app,
+                                    &attention_key,
+                                    &message.status,
+                                    &format!("pi.{}", message.event_type),
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => {
+                    emit_opencode_attention(
+                        &app,
+                        &attention_key,
+                        "error",
+                        "beehive.pi.listen_failed",
+                    );
+                    return;
+                }
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn create_pty(
     id: String,
@@ -224,8 +306,25 @@ pub async fn create_pty(
     } else {
         None
     };
+    let pi_listener = if matches!(cmd.as_deref(), Some(PI_SENTINEL)) {
+        Some(
+            TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| format!("Failed to reserve Pi status port: {}", e))?,
+        )
+    } else {
+        None
+    };
+    let pi_port = pi_listener
+        .as_ref()
+        .map(|listener| {
+            listener
+                .local_addr()
+                .map(|addr| addr.port())
+                .map_err(|e| format!("Failed to read Pi status port: {}", e))
+        })
+        .transpose()?;
 
-    let startup_command = if cmd.is_none() && opencode_port.is_none() {
+    let startup_command = if cmd.is_none() && opencode_port.is_none() && pi_port.is_none() {
         let config = crate::hive::load_app_config().await?;
         normalize_startup_command(config.comb_startup_command.as_deref()).map(str::to_string)
     } else {
@@ -252,8 +351,8 @@ pub async fn create_pty(
         })
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    let mut command = match (&cmd, opencode_port) {
-        (_, Some(port)) => {
+    let mut command = match (&cmd, opencode_port, pi_port) {
+        (_, Some(port), _) => {
             let shell = resolve_login_shell();
             let mut cb = CommandBuilder::new(&shell);
             cb.arg("-lc");
@@ -261,7 +360,21 @@ pub async fn create_pty(
             cb.env("SHELL", &shell);
             cb
         }
-        (Some(c), None) => {
+        (_, None, Some(port)) => {
+            let shell = resolve_login_shell();
+            let mut cb = CommandBuilder::new(&shell);
+            cb.arg("-lc");
+            cb.arg(pi_wrapper_script());
+            cb.env("SHELL", &shell);
+            cb.env("BEEHIVE_PI_STATUS_EXTENSION", pi_status_extension());
+            cb.env(
+                "BEEHIVE_PI_STATUS_REPORTER",
+                pi_status_process_exit_reporter(),
+            );
+            cb.env("BEEHIVE_PI_STATUS_PORT", port.to_string());
+            cb
+        }
+        (Some(c), None, None) => {
             let mut cb = CommandBuilder::new(c);
             if let Some(ref a) = args {
                 for arg in a {
@@ -270,7 +383,7 @@ pub async fn create_pty(
             }
             cb
         }
-        (None, None) => {
+        (None, None, None) => {
             let shell = resolve_login_shell();
             let mut cb = CommandBuilder::new(&shell);
             if let Some(startup_command) = startup_command.as_deref() {
@@ -287,7 +400,12 @@ pub async fn create_pty(
     command.env("TERM", "xterm-256color");
 
     // Ensure Homebrew paths are visible inside bundled .app (hardened runtime strips PATH)
-    let extra_paths = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"];
+    let extra_paths = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ];
     let system_path = std::env::var("PATH").unwrap_or_default();
     let mut parts: Vec<&str> = extra_paths.to_vec();
     for p in system_path.split(':') {
@@ -303,9 +421,18 @@ pub async fn create_pty(
         .spawn_command(command)
         .map_err(|e| format!("Failed to spawn: {}", e))?;
 
-    if let (Some(port), Some(key)) = (opencode_port, attention_key) {
+    if let (Some(port), Some(key)) = (opencode_port, attention_key.clone()) {
         start_opencode_event_listener(app.clone(), key, port);
     }
+
+    let attention_listener_alive = if let (Some(listener), Some(key)) = (pi_listener, attention_key)
+    {
+        let alive = Arc::new(AtomicBool::new(true));
+        start_pi_event_listener(app.clone(), key, listener, Arc::clone(&alive));
+        Some(alive)
+    } else {
+        None
+    };
 
     let writer = pair
         .master
@@ -331,6 +458,7 @@ pub async fn create_pty(
                 master: master.clone(),
                 writer: writer.clone(),
                 child,
+                attention_listener_alive: attention_listener_alive.clone(),
             },
         );
     }
@@ -344,6 +472,9 @@ pub async fn create_pty(
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
+                    if let Some(alive) = &attention_listener_alive {
+                        alive.store(false, Ordering::Relaxed);
+                    }
                     let _ = app.emit(&exit_event, ());
                     break;
                 }
@@ -352,6 +483,9 @@ pub async fn create_pty(
                     let _ = app.emit(&output_event, data);
                 }
                 Err(_) => {
+                    if let Some(alive) = &attention_listener_alive {
+                        alive.store(false, Ordering::Relaxed);
+                    }
                     let _ = app.emit(&exit_event, ());
                     break;
                 }
@@ -455,6 +589,9 @@ pub async fn resize_pty(
 pub async fn close_pty(id: String, state: State<'_, PtyState>) -> Result<(), String> {
     let mut manager = state.lock().await;
     if let Some(mut session) = manager.sessions.remove(&id) {
+        if let Some(alive) = &session.attention_listener_alive {
+            alive.store(false, Ordering::Relaxed);
+        }
         session.child.kill().ok();
     }
     Ok(())
@@ -462,7 +599,9 @@ pub async fn close_pty(id: String, state: State<'_, PtyState>) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_startup_command, startup_wrapper_script};
+    use super::{
+        normalize_startup_command, pi_status_extension, pi_wrapper_script, startup_wrapper_script,
+    };
 
     #[test]
     fn normalize_startup_command_ignores_blank_values() {
@@ -476,5 +615,24 @@ mod tests {
         let script = startup_wrapper_script();
         assert!(script.contains("BEEHIVE_STARTUP_COMMAND"));
         assert!(script.contains("exec \"$SHELL\" -l"));
+    }
+
+    #[test]
+    fn pi_launcher_uses_a_scoped_status_extension_and_returns_to_the_shell() {
+        let script = pi_wrapper_script();
+        assert!(script.contains("BEEHIVE_PI_STATUS_EXTENSION"));
+        assert!(script.contains("pi -e \"$extension_path\""));
+        assert!(script.contains("rm -f \"$extension_path\""));
+        assert!(script.contains("rmdir \"$extension_dir\""));
+        assert!(script.contains("exec \"$SHELL\" -l"));
+    }
+
+    #[test]
+    fn pi_status_extension_reports_busy_and_settled_lifecycle_events() {
+        let extension = pi_status_extension();
+        assert!(extension.contains("pi.on(\"agent_start\""));
+        assert!(extension.contains("notify(\"clear\", \"agent_start\")"));
+        assert!(extension.contains("pi.on(\"agent_settled\""));
+        assert!(extension.contains("notify(\"idle\", \"agent_settled\")"));
     }
 }
